@@ -32,7 +32,7 @@ async def export_experiment_csv(experiment_id: str) -> str:
         sess_map[str(s["_id"])] = s
 
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, delimiter=";")
 
     # базовый заголовок
     header = [

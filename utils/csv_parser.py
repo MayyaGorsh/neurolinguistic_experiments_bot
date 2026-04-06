@@ -13,7 +13,7 @@ logger = logging.getLogger("bot")
 
 def parse_csv_text(text: str) -> list[dict]:
     """прочитать CSV-текст и вернуть список словарей (строк)"""
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
     rows = []
     for row in reader:
         rows.append(dict(row))
