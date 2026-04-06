@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -m py_compile logger.py)",
+      "Bash(python -m py_compile models/user.py)",
+      "Bash(python -m py_compile models/experiment.py)",
+      "Bash(python -m py_compile models/session.py)",
+      "Bash(python -m py_compile db/connection.py)",
+      "Bash(python -m py_compile engine/audio.py)",
+      "Bash(python -m py_compile engine/demographics.py)",
+      "Bash(python -m py_compile engine/runner.py)",
+      "Bash(python -m py_compile handlers/start.py)",
+      "Bash(python -m py_compile handlers/common.py)",
+      "Bash(python -m py_compile handlers/participant.py)",
+      "Bash(python -m py_compile handlers/promo.py)",
+      "Bash(python -m py_compile handlers/media_upload.py)",
+      "Bash(python -m py_compile templates/word_level.py)",
+      "Bash(python -m py_compile templates/sentence_level.py)",
+      "Bash(python -m py_compile templates/auditory.py)",
+      "Bash(python -m py_compile templates/visual.py)",
+      "Bash(python -m py_compile templates/registry.py)",
+      "Bash(python -m py_compile handlers/researcher.py)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m py_compile utils/export.py)",
+      "Bash(python -m py_compile db/repositories.py)",
+      "Bash(python -m py_compile handlers/free_form.py)",
+      "Bash(python -m py_compile utils/csv_parser.py)",
+      "Bash(python -m py_compile utils/validators.py)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}
