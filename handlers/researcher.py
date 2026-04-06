@@ -47,6 +47,7 @@ TEMPLATE_LIST = [
     ("sensicality_judgment", "Sensicality judgment"),
     ("acceptability_judgment", "Acceptability judgment"),
     ("tvjt", "Truth Value Judgment Task"),
+    ("statement_verification", "Statement verification"),
     ("self_paced_reading", "Self-Paced Reading"),
     ("maze", "Maze task"),
     ("text_change_detection", "Text change detection"),
@@ -300,15 +301,28 @@ async def on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
     current_phase_num = data.get("current_phase_num", 1)
     current_list = data.get("current_list", "1")
 
-    # валидация и маппинг
+    # валидация и маппинг (с учетом phase_csv_mappings для многофазных шаблонов)
     tmpl_info = tmpl_registry.get_template(template_type)
     if tmpl_info:
-        required = tmpl_info.get("required_columns", [])
+        phase_mappings = tmpl_info.get("phase_csv_mappings", {})
+        if current_phase_num in phase_mappings:
+            pm = phase_mappings[current_phase_num]
+            required = pm.get("required_columns", [])
+            mapping = {k: v for k, v in pm.items() if k != "required_columns"}
+        else:
+            required = tmpl_info.get("required_columns", [])
+            mapping = tmpl_info.get("csv_mapping", {})
         errors = csv_parser.validate_columns(rows, required)
         if errors:
             await message.answer("Ошибки в CSV:\n" + "\n".join(errors))
             return
-        mapping = tmpl_info.get("csv_mapping", {})
+        # доп. валидация: video_task — одинаковое количество опций
+        if template_type == "video_task":
+            from utils.validators import validate_csv_for_template
+            extra_errors = validate_csv_for_template(template_type, rows)
+            if extra_errors:
+                await message.answer("Ошибки в CSV:\n" + "\n".join(extra_errors))
+                return
     else:
         mapping = auto_detect_mapping(rows)
 
@@ -448,45 +462,41 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
     # формируем фазы из шаблона
     tmpl_info = tmpl_registry.get_template(template_type)
     if tmpl_info:
-        if len(phases_info) > 1 and len(trials_by_phase) > 1:
-            # многофазный шаблон — собираем фазы по отдельности
+        build_fn = tmpl_info.get("build_phase")
+        if build_fn:
             phases = []
             for phase_num in sorted(trials_by_phase.keys()):
                 phase_trials = trials_by_phase[phase_num]
-                built = tmpl_info["build_phases"](phase_trials, data)
-                # берем фазу с нужным индексом
-                for p in built:
-                    if p["phase_index"] == phase_num - 1:
-                        phases.append(p)
-                        break
-                else:
-                    # если build_phases не вернул фазу с нужным индексом,
-                    # берем первую и корректируем индекс
-                    if built:
-                        built[0]["phase_index"] = phase_num - 1
-                        phases.append(built[0])
+                phase_index = phase_num - 1
+                phase = build_fn(phase_trials, data, phase_index)
+                phases.append(phase)
         else:
-            # однофазный шаблон или все данные в одной фазе
+            # fallback — старый формат (не должен использоваться)
             all_trials = []
             for phase_num in sorted(trials_by_phase.keys()):
                 all_trials.extend(trials_by_phase[phase_num])
-            phases = tmpl_info["build_phases"](all_trials, data)
+            phases = [tmpl_info["build_phases"](all_trials, data)]
     else:
-        # free_form или неизвестный — одна фаза со всеми пробами
-        all_trials = []
-        for phase_num in sorted(trials_by_phase.keys()):
-            all_trials.extend(trials_by_phase[phase_num])
-        phases = [{
-            "phase_index": 0,
-            "title": "Основная фаза",
-            "instruction": "",
-            "stimulus_type": "text",
-            "response_type": "buttons",
-            "trials": all_trials,
-            "randomize_order": data.get("randomize", False),
-            "time_limit": data.get("time_limit"),
-            "settings": {},
-        }]
+        # free_form — фазы уже собраны в free_form_phases
+        ff_phases = data.get("free_form_phases", [])
+        if ff_phases:
+            phases = ff_phases
+        else:
+            # fallback — одна фаза со всеми пробами
+            all_trials = []
+            for phase_num in sorted(trials_by_phase.keys()):
+                all_trials.extend(trials_by_phase[phase_num])
+            phases = [{
+                "phase_index": 0,
+                "title": "Основная фаза",
+                "instruction": "",
+                "stimulus_type": "text",
+                "response_type": "buttons",
+                "trials": all_trials,
+                "randomize_order": data.get("randomize", False),
+                "time_limit": data.get("time_limit"),
+                "settings": {},
+            }]
 
     deep_link_id = "exp_" + secrets.token_urlsafe(8)
 

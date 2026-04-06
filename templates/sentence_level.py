@@ -3,6 +3,7 @@
 - Sensicality judgment
 - Acceptability judgment
 - Truth Value Judgment Task (TVJT)
+- Statement verification
 - Self-Paced Reading
 - Maze task
 - Text change detection
@@ -14,19 +15,14 @@ from templates.registry import register
 
 
 # ── Sensicality judgment ──
+# CSV: stimulus
+# кнопки "Осмысленно" / "Неосмысленно" заданы в шаблоне
 
-def build_sensicality(trials, config):
+def build_sensicality(trials, config, phase_index=0):
     for t in trials:
         t["response_options"] = ["Осмысленно", "Неосмысленно"]
-        correct = t.get("correct_answer", "")
-        if correct:
-            correct_lower = correct.strip().lower()
-            if correct_lower in ("yes", "да", "1", "осмысленно"):
-                t["correct_answer"] = "Осмысленно"
-            else:
-                t["correct_answer"] = "Неосмысленно"
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Sensicality Judgment",
         "instruction": "Определите, является ли предложение осмысленным.",
         "stimulus_type": "text",
@@ -35,24 +31,24 @@ def build_sensicality(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit", 4),
         "settings": {},
-    }]
+    }
 
 
 register("sensicality_judgment", {
     "required_columns": ["stimulus"],
     "csv_mapping": {
         "stimulus_content": "stimulus",
-        "correct_answer": "correct",
     },
-    "build_phases": build_sensicality,
+    "build_phase": build_sensicality,
     "export_columns": [],
     "phases_info": ["Sensicality Judgment"],
 })
 
 
 # ── Acceptability judgment ──
+# CSV: stimulus, stimulus2 (опц. для joint presentation)
 
-def build_acceptability(trials, config):
+def build_acceptability(trials, config, phase_index=0):
     settings = {}
     resp_format = config.get("response_format", "likert")
     presentation = config.get("presentation_mode", "single")
@@ -85,8 +81,8 @@ def build_acceptability(trials, config):
                     f"1) {t['stimulus_content']}\n\n2) {stim2}"
                 )
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Acceptability Judgment",
         "instruction": "Оцените приемлемость предложения.",
         "stimulus_type": "text",
@@ -95,7 +91,7 @@ def build_acceptability(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": settings,
-    }]
+    }
 
 
 register("acceptability_judgment", {
@@ -104,93 +100,109 @@ register("acceptability_judgment", {
         "stimulus_content": "stimulus",
         "auxiliary": ["stimulus2"],
     },
-    "build_phases": build_acceptability,
+    "build_phase": build_acceptability,
     "export_columns": ["stimulus2"],
     "phases_info": ["Acceptability Judgment"],
 })
 
 
 # ── Truth Value Judgment Task ──
+# CSV: context, stimulus, opt1..opt6 (правильный помечен *)
+# одна фаза, контекст + утверждение
 
-def build_tvjt(trials, config):
-    main_trials = []
-    control_trials = []
-
+def build_tvjt(trials, config, phase_index=0):
     for t in trials:
         aux = t.get("auxiliary", {})
         context = aux.get("context", "")
         if context:
             t["stimulus_content"] = f"{context}\n\n{t['stimulus_content']}"
-
         if not t.get("response_options"):
             t["response_options"] = ["Да", "Нет", "Не знаю"]
-        main_trials.append(t)
 
-        control_q = aux.get("control_question", "")
-        if control_q:
-            control_opts = []
-            for k in sorted(aux.keys()):
-                if k.startswith("control_opt") and aux[k].strip():
-                    control_opts.append(aux[k].strip())
-            control_trial = {
-                "trial_index": t["trial_index"],
-                "stimulus_content": control_q,
-                "stimulus_type": "text",
-                "stimulus_metadata": {},
-                "response_options": control_opts if control_opts else ["Да", "Нет"],
-                "correct_answer": aux.get("control_correct"),
-                "auxiliary": {"is_control": True},
-                "list_id": t.get("list_id"),
-            }
-            control_trials.append(control_trial)
-
-    phases = [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Truth Value Judgment",
         "instruction": "Оцените истинность утверждения.",
         "stimulus_type": "text",
         "response_type": "buttons",
-        "trials": main_trials,
+        "trials": trials,
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {},
-    }]
-
-    if control_trials:
-        phases.append({
-            "phase_index": 1,
-            "title": "Контроль знания",
-            "instruction": "Ответьте на контрольные вопросы.",
-            "stimulus_type": "text",
-            "response_type": "buttons",
-            "trials": control_trials,
-            "randomize_order": False,
-            "time_limit": None,
-            "settings": {},
-        })
-
-    return phases
+    }
 
 
 register("tvjt", {
     "required_columns": ["stimulus"],
     "csv_mapping": {
         "stimulus_content": "stimulus",
-        "response_options": ["opt1", "opt2", "opt3"],
-        "correct_answer": "correct",
-        "auxiliary": ["context", "control_question",
-                      "control_opt1", "control_opt2", "control_opt3",
-                      "control_correct"],
+        "response_options": ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6"],
+        "auxiliary": ["context"],
     },
-    "build_phases": build_tvjt,
-    "export_columns": ["context", "is_control"],
-    "phases_info": ["Truth Value Judgment", "Контроль знания"],
+    "build_phase": build_tvjt,
+    "export_columns": ["context"],
+    "phases_info": ["Truth Value Judgment"],
+})
+
+
+# ── Statement verification ──
+# 2 фазы: верификация утверждений + опциональная проверка знания (открытый ответ)
+# фаза 1 CSV: stimulus, opt1..opt6 (правильный помечен *)
+# фаза 2 CSV: question (вопрос для проверки знания, открытый ответ)
+
+def build_statement_verification(trials, config, phase_index=0):
+    """единая build_phase: phase_index=0 — верификация, phase_index=1 — контроль"""
+    if phase_index == 0:
+        for t in trials:
+            if not t.get("response_options"):
+                t["response_options"] = ["Верно", "Неверно", "Не знаю"]
+        return {
+            "phase_index": 0,
+            "title": "Statement Verification",
+            "instruction": "Определите, верно ли утверждение.",
+            "stimulus_type": "text",
+            "response_type": "buttons",
+            "trials": trials,
+            "randomize_order": config.get("randomize", False),
+            "time_limit": config.get("time_limit"),
+            "settings": {},
+        }
+    else:
+        return {
+            "phase_index": phase_index,
+            "title": "Контроль знания",
+            "instruction": "Ответьте на вопросы.",
+            "stimulus_type": "text",
+            "response_type": "open_text",
+            "trials": trials,
+            "randomize_order": False,
+            "time_limit": None,
+            "settings": {},
+        }
+
+
+register("statement_verification", {
+    "required_columns": ["stimulus"],
+    "csv_mapping": {
+        "stimulus_content": "stimulus",
+        "response_options": ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6"],
+    },
+    "build_phase": build_statement_verification,
+    "phase_csv_mappings": {
+        2: {
+            "stimulus_content": "question",
+            "required_columns": ["question"],
+        },
+    },
+    "export_columns": [],
+    "phases_info": ["Statement Verification", "Контроль знания"],
 })
 
 
 # ── Self-Paced Reading ──
+# CSV: sentence_id, segment, region (опц.)
 
-def build_spr(trials, config):
+def build_spr(trials, config, phase_index=0):
     sentences = {}
     for t in trials:
         aux = t.get("auxiliary", {})
@@ -223,8 +235,8 @@ def build_spr(trials, config):
             })
             idx += 1
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Self-Paced Reading",
         "instruction": (
             "Вам будет предъявляться предложение по частям. "
@@ -236,7 +248,7 @@ def build_spr(trials, config):
         "randomize_order": False,
         "time_limit": config.get("time_limit"),
         "settings": {"is_spr": True},
-    }]
+    }
 
 
 register("self_paced_reading", {
@@ -245,15 +257,16 @@ register("self_paced_reading", {
         "stimulus_content": "segment",
         "auxiliary": ["sentence_id", "region"],
     },
-    "build_phases": build_spr,
+    "build_phase": build_spr,
     "export_columns": ["sentence_id", "segment", "region"],
     "phases_info": ["Self-Paced Reading"],
 })
 
 
 # ── Maze task ──
+# CSV: target, distractor ($$$ — разделитель предложений)
 
-def build_maze(trials, config):
+def build_maze(trials, config, phase_index=0):
     import random
     maze_trials = []
     idx = 0
@@ -286,8 +299,8 @@ def build_maze(trials, config):
         })
         idx += 1
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Maze Task",
         "instruction": (
             "На каждом шаге выбирайте слово, которое грамматически "
@@ -299,7 +312,7 @@ def build_maze(trials, config):
         "randomize_order": False,
         "time_limit": config.get("time_limit"),
         "settings": {"is_maze": True},
-    }]
+    }
 
 
 register("maze", {
@@ -308,15 +321,16 @@ register("maze", {
         "stimulus_content": "target",
         "auxiliary": ["distractor"],
     },
-    "build_phases": build_maze,
+    "build_phase": build_maze,
     "export_columns": ["target", "distractor"],
     "phases_info": ["Maze Task"],
 })
 
 
 # ── Text change detection ──
+# CSV: text_original, text_repeated, changed_word_original, changed_word_new
 
-def build_text_change(trials, config):
+def build_text_change(trials, config, phase_index=0):
     for t in trials:
         aux = t.get("auxiliary", {})
         t["stimulus_metadata"] = {
@@ -330,8 +344,8 @@ def build_text_change(trials, config):
         else:
             t["correct_answer"] = "Изменения не было"
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Text Change Detection",
         "instruction": (
             "Вам будет показан текст, затем он исчезнет, и появится "
@@ -343,7 +357,7 @@ def build_text_change(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {"is_text_change": True},
-    }]
+    }
 
 
 register("text_change_detection", {
@@ -352,73 +366,81 @@ register("text_change_detection", {
         "stimulus_content": "text_original",
         "auxiliary": ["text_repeated", "changed_word_original", "changed_word_new"],
     },
-    "build_phases": build_text_change,
+    "build_phase": build_text_change,
     "export_columns": ["changed_word_original", "changed_word_new"],
     "phases_info": ["Text Change Detection"],
 })
 
 
 # ── Probe recognition ──
+# 2 фазы, исследователь загружает 2 отдельных CSV
+# фаза 1 CSV: stimulus (фразы для запоминания, без correct)
+# фаза 2 CSV: stimulus, correct (yes/no)
 
-def build_probe_recognition(trials, config):
-    study = []
-    test = []
-    for t in trials:
-        pt = t.get("auxiliary", {}).get("phase_type", "test")
-        if pt == "study":
-            study.append(t)
-        else:
-            test.append(t)
-            if not t.get("response_options"):
-                t["response_options"] = ["Да", "Нет"]
-
-    phases = [
-        {
+def build_probe_recognition(trials, config, phase_index=0):
+    """единая build_phase: phase_index=0 — запоминание, phase_index=1 — тестирование"""
+    if phase_index == 0:
+        for t in trials:
+            t["response_options"] = []
+            t["correct_answer"] = None
+        return {
             "phase_index": 0,
             "title": "Фаза запоминания",
             "instruction": "Прочитайте и запомните каждую фразу.",
             "stimulus_type": "text",
             "response_type": "buttons",
-            "trials": study,
+            "trials": trials,
             "randomize_order": config.get("randomize", False),
             "time_limit": None,
             "settings": {},
-        },
-        {
-            "phase_index": 1,
+        }
+    else:
+        for t in trials:
+            t["response_options"] = ["Да", "Нет"]
+            correct_raw = (t.get("correct_answer") or "").strip().lower()
+            if correct_raw in ("yes", "да", "1"):
+                t["correct_answer"] = "Да"
+            elif correct_raw in ("no", "нет", "0"):
+                t["correct_answer"] = "Нет"
+        return {
+            "phase_index": phase_index,
             "title": "Фаза тестирования",
             "instruction": (
                 "Определите, встречалось ли выделенное слово на предыдущем этапе."
             ),
             "stimulus_type": "text",
             "response_type": "buttons",
-            "trials": test,
+            "trials": trials,
             "randomize_order": config.get("randomize", False),
             "time_limit": config.get("time_limit"),
             "settings": {},
-        },
-    ]
-    return phases
+        }
 
 
 register("probe_recognition", {
     "required_columns": ["stimulus"],
     "csv_mapping": {
         "stimulus_content": "stimulus",
-        "correct_answer": "correct",
-        "auxiliary": ["phase_type"],
     },
-    "build_phases": build_probe_recognition,
-    "export_columns": ["phase_type"],
+    "build_phase": build_probe_recognition,
+    "phase_csv_mappings": {
+        2: {
+            "stimulus_content": "stimulus",
+            "correct_answer": "correct",
+            "required_columns": ["stimulus", "correct"],
+        },
+    },
+    "export_columns": [],
     "phases_info": ["Фаза запоминания", "Фаза тестирования"],
 })
 
 
 # ── Interpretation generation ──
+# CSV: stimulus
 
-def build_interpretation(trials, config):
-    return [{
-        "phase_index": 0,
+def build_interpretation(trials, config, phase_index=0):
+    return {
+        "phase_index": phase_index,
         "title": "Interpretation Generation",
         "instruction": (
             "Прочитайте предложение, нажмите «Далее», затем запишите, "
@@ -430,7 +452,7 @@ def build_interpretation(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {"is_interpretation": True},
-    }]
+    }
 
 
 register("interpretation_generation", {
@@ -438,7 +460,7 @@ register("interpretation_generation", {
     "csv_mapping": {
         "stimulus_content": "stimulus",
     },
-    "build_phases": build_interpretation,
+    "build_phase": build_interpretation,
     "export_columns": [],
     "phases_info": ["Interpretation Generation"],
 })

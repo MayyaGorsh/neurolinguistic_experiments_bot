@@ -178,19 +178,7 @@ async def on_phase_csv(message: types.Message, state: FSMContext, bot: Bot):
 async def on_free_form_done(callback: types.CallbackQuery, state: FSMContext):
     """сохранить free-form эксперимент — передаем управление в researcher.on_save_draft"""
     await callback.answer()
-    data = await state.get_data()
-    phases = data.get("free_form_phases", [])
 
-    # собираем все trials
-    all_trials = []
-    for p in phases:
-        all_trials.extend(p.get("trials", []))
-
-    await state.update_data(
-        csv_files={"1": all_trials},
-        template_type="free_form",
-    )
-
-    # вызываем сохранение через основной flow
+    # фазы уже собраны в free_form_phases — переходим к настройкам
     from handlers.researcher import show_config_menu
     await show_config_menu(callback, state)

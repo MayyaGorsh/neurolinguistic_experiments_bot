@@ -10,10 +10,9 @@ from templates.registry import register
 
 
 # ── Picture selection ──
-# CSV: pair_id, img_1_filename, img_2_filename, correct_img (опц.), repeats (опц.)
-# кнопки с номерами картинок, рандомизация порядка в паре, RT
+# CSV: stimulus, pair_id, img_1_filename, img_2_filename, correct_img (опц.)
 
-def build_picture_selection(trials, config):
+def build_picture_selection(trials, config, phase_index=0):
     import random
 
     for t in trials:
@@ -41,8 +40,8 @@ def build_picture_selection(trials, config):
             elif correct.strip() == images[1]:
                 t["correct_answer"] = "Картинка 2"
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Picture Selection",
         "instruction": "Выберите картинку, которая лучше соответствует предложению.",
         "stimulus_type": "image",
@@ -51,39 +50,40 @@ def build_picture_selection(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {"is_picture_selection": True},
-    }]
+    }
 
 
 register("picture_selection", {
-    "required_columns": ["pair_id", "img_1_filename", "img_2_filename"],
+    "required_columns": ["stimulus", "pair_id", "img_1_filename", "img_2_filename"],
     "csv_mapping": {
-        "stimulus_content": "pair_id",
+        "stimulus_content": "stimulus",
         "auxiliary": ["pair_id", "img_1_filename", "img_2_filename",
-                      "correct_img", "repeats"],
+                      "correct_img"],
     },
-    "build_phases": build_picture_selection,
+    "build_phase": build_picture_selection,
     "export_columns": ["pair_id", "img_1", "img_2"],
     "phases_info": ["Picture Selection"],
 })
 
 
 # ── Covered box ──
-# CSV: pair_id, img_1_filename, img_2_filename, correct_img (опц.)
-# три кнопки: картинка 1, картинка 2, закрытая коробка
+# CSV: stimulus, pair_id, img_1_filename, img_2_filename, img_3_filename, correct_img (опц.)
 
-def build_covered_box(trials, config):
+def build_covered_box(trials, config, phase_index=0):
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
         img2 = aux.get("img_2_filename", "")
+        img3 = aux.get("img_3_filename", "")
         correct = aux.get("correct_img", "")
 
         t["stimulus_metadata"] = {
             "pair_id": aux.get("pair_id", ""),
             "img_1": img1,
             "img_2": img2,
+            "img_3": img3,
         }
-        t["response_options"] = ["Картинка 1", "Картинка 2", "Закрытая коробка"]
+        t["response_options"] = ["Картинка 1", "Картинка 2", "Картинка 3"]
 
         if correct:
             correct = correct.strip()
@@ -91,11 +91,11 @@ def build_covered_box(trials, config):
                 t["correct_answer"] = "Картинка 1"
             elif correct == img2:
                 t["correct_answer"] = "Картинка 2"
-            elif correct.lower() in ("box", "covered", "закрытая"):
-                t["correct_answer"] = "Закрытая коробка"
+            elif correct == img3:
+                t["correct_answer"] = "Картинка 3"
 
-    return [{
-        "phase_index": 0,
+    return {
+        "phase_index": phase_index,
         "title": "Covered Box",
         "instruction": (
             "Выберите картинку, которая соответствует описанию, "
@@ -107,28 +107,39 @@ def build_covered_box(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {"is_covered_box": True},
-    }]
+    }
 
 
 register("covered_box", {
-    "required_columns": ["pair_id", "img_1_filename", "img_2_filename"],
+    "required_columns": ["stimulus", "pair_id", "img_1_filename", "img_2_filename", "img_3_filename"],
     "csv_mapping": {
-        "stimulus_content": "pair_id",
-        "auxiliary": ["pair_id", "img_1_filename", "img_2_filename", "correct_img"],
+        "stimulus_content": "stimulus",
+        "auxiliary": ["pair_id", "img_1_filename", "img_2_filename",
+                      "img_3_filename", "correct_img"],
     },
-    "build_phases": build_covered_box,
-    "export_columns": ["pair_id", "img_1", "img_2"],
+    "build_phase": build_covered_box,
+    "export_columns": ["pair_id", "img_1", "img_2", "img_3"],
     "phases_info": ["Covered Box"],
 })
 
 
 # ── Picture naming ──
-# CSV: img_filename, correct (опционально — список допустимых ответов)
-# ответ текстом или голосовым сообщением, без RT
+# CSV: img_filename, correct1..correct4 (опциональные допустимые ответы)
 
-def build_picture_naming(trials, config):
-    return [{
-        "phase_index": 0,
+def build_picture_naming(trials, config, phase_index=0):
+    for t in trials:
+        correct_list = []
+        aux = t.get("auxiliary", {})
+        for key in sorted(aux.keys()):
+            if key.startswith("correct") and aux[key].strip():
+                correct_list.append(aux[key].strip())
+        if correct_list:
+            t["correct_answer"] = correct_list
+        t["stimulus_metadata"] = {
+            "img_filename": t.get("stimulus_content", ""),
+        }
+    return {
+        "phase_index": phase_index,
         "title": "Picture Naming",
         "instruction": "Назовите изображенный объект одним словом или короткой фразой.",
         "stimulus_type": "image",
@@ -137,53 +148,63 @@ def build_picture_naming(trials, config):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {},
-    }]
+    }
 
 
 register("picture_naming", {
     "required_columns": ["img_filename"],
     "csv_mapping": {
         "stimulus_content": "img_filename",
-        "correct_answer": "correct",
+        "auxiliary": ["correct1", "correct2", "correct3", "correct4"],
     },
-    "build_phases": build_picture_naming,
+    "build_phase": build_picture_naming,
     "export_columns": ["img_filename"],
     "phases_info": ["Picture Naming"],
 })
 
 
 # ── Video task ──
-# CSV: video_filename, opt1, opt2, ... (кнопки, количество произвольное)
-# для ликерта: кнопки = градации шкалы
+# CSV: video_filename, opt1..opt7 (кнопки)
+# все стимулы должны иметь одинаковое количество заполненных опций
 
-def build_video_task(trials, config):
-    response_type = "buttons"
+def build_video_task(trials, config, phase_index=0):
     settings = {}
 
-    # если все пробы имеют одинаковое число кнопок >= 5 — считаем ликертом
     option_counts = [len(t.get("response_options", [])) for t in trials]
-    if option_counts and min(option_counts) >= 5 and len(set(option_counts)) == 1:
-        response_type = "likert"
-        scale = option_counts[0]
-        labels = {}
-        for t in trials:
-            for i, opt in enumerate(t["response_options"]):
-                labels[str(i + 1)] = opt
-            break
-        settings["likert_scale"] = scale
-        settings["likert_labels"] = labels
 
-    return [{
-        "phase_index": 0,
+    if not option_counts:
+        return {
+            "phase_index": phase_index,
+            "title": "Video Task",
+            "instruction": "Просмотрите видео и выберите ответ.",
+            "stimulus_type": "video",
+            "response_type": "buttons",
+            "trials": trials,
+            "randomize_order": config.get("randomize", False),
+            "time_limit": config.get("time_limit"),
+            "settings": {},
+        }
+
+    scale = option_counts[0]
+    labels = {}
+    for t in trials:
+        for i, opt in enumerate(t["response_options"]):
+            labels[str(i + 1)] = opt
+        break
+    settings["likert_scale"] = scale
+    settings["likert_labels"] = labels
+
+    return {
+        "phase_index": phase_index,
         "title": "Video Task",
         "instruction": "Просмотрите видео и выберите ответ.",
         "stimulus_type": "video",
-        "response_type": response_type,
+        "response_type": "likert",
         "trials": trials,
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": settings,
-    }]
+    }
 
 
 register("video_task", {
@@ -192,7 +213,7 @@ register("video_task", {
         "stimulus_content": "video_filename",
         "response_options": ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6", "opt7"],
     },
-    "build_phases": build_video_task,
+    "build_phase": build_video_task,
     "export_columns": ["video_filename"],
     "phases_info": ["Video Task"],
 })

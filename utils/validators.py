@@ -37,7 +37,8 @@ def validate_experiment(experiment: dict) -> list[str]:
     return errors
 
 
-def validate_csv_for_template(template_code: str, rows: list[dict]) -> list[str]:
+def validate_csv_for_template(template_code: str, rows: list[dict],
+                              phase_num: int = 1) -> list[str]:
     """проверить CSV на соответствие шаблону"""
     errors = []
 
@@ -46,30 +47,32 @@ def validate_csv_for_template(template_code: str, rows: list[dict]) -> list[str]
 
     tmpl = tmpl_registry.get_template(template_code)
     if not tmpl:
-        return []  # free-form, без валидации шаблона
+        return []
 
-    required = tmpl.get("required_columns", [])
+    # определяем required_columns с учетом фазы
+    phase_mappings = tmpl.get("phase_csv_mappings", {})
+    if phase_num in phase_mappings:
+        required = phase_mappings[phase_num].get("required_columns", [])
+    else:
+        required = tmpl.get("required_columns", [])
+
     columns = set(rows[0].keys())
     for col in required:
         if col not in columns:
             errors.append(f"Отсутствует обязательная колонка: «{col}».")
 
-    # проверка наличия correct_answer для шаблонов, которые это требуют
-    mapping = tmpl.get("csv_mapping", {})
-    correct_col = mapping.get("correct_answer")
-    needs_correct = template_code in (
-        "lexical_decision", "sensicality_judgment", "cloze_mc",
-    )
-    if needs_correct and correct_col:
+    # валидация video_task: все стимулы должны иметь одинаковое кол-во опций
+    if template_code == "video_task":
+        opt_cols = ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6", "opt7"]
+        counts = []
         for i, row in enumerate(rows):
-            val = row.get(correct_col, "").strip()
-            if not val:
-                # для cloze_mc проверяем отдельно — помечен * в вариантах
-                if template_code != "cloze_mc":
-                    errors.append(
-                        f"Строка {i + 1}: не задан правильный ответ "
-                        f"в колонке «{correct_col}»."
-                    )
+            n = sum(1 for c in opt_cols if c in row and row[c].strip())
+            counts.append(n)
+        if counts and len(set(counts)) > 1:
+            errors.append(
+                "Все стимулы должны иметь одинаковое количество опций. "
+                f"Найдены строки с разным числом: {sorted(set(counts))}."
+            )
 
     return errors
 
