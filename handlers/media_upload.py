@@ -52,7 +52,11 @@ async def start_media_upload(
     text = (
         f"Ожидаемые файлы ({len(expected)}):\n"
         + "\n".join(f"  • {f}" for f in sorted(expected))
-        + "\n\nОтправляйте файлы по одному. Имя файла должно совпадать."
+        + "\n\nОтправляйте файлы по одному. Имя файла должно совпадать "
+        "с тем, что указано в CSV.\n\n"
+        "💡 <b>Замена файла:</b> если файл с таким именем уже был "
+        "загружен раньше — просто пришлите новый с тем же именем, "
+        "и в эксперименте будет использоваться новая версия."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Готово", callback_data="media_done")],

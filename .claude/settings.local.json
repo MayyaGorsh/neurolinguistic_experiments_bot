@@ -1,5 +1,13 @@
 {
   "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Write(.env)",
+      "Write(.env.*)"
+    ],
     "allow": [
       "Bash(python -m py_compile config.py)",
       "Bash(python -m py_compile logger.py)",

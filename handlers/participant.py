@@ -117,6 +117,16 @@ async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
     if not experiment:
         return
 
+    # помечаем инструкцию текущей фазы как показанную — чтобы
+    # present_trial не нарисовал её снова (именно из-за этого раньше
+    # получалась бесконечная петля «Далее»)
+    phase_idx = session.get("current_phase", 0)
+    shown = list(session.get("shown_instructions", []))
+    if phase_idx not in shown:
+        shown.append(phase_idx)
+        await repo.update_session(session_id, {"shown_instructions": shown})
+        session = await repo.get_session(session_id)
+
     prepared = session.get("prepared_phases") or experiment["phases"]
     exp_copy = dict(experiment)
     exp_copy["phases"] = prepared

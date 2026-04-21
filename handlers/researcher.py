@@ -7,6 +7,7 @@ import logging
 import secrets
 
 from aiogram import Router, Bot, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import (
@@ -33,6 +34,7 @@ class CreateExperiment(StatesGroup):
     configuring = State()
     uploading_csv = State()
     uploading_media = State()
+    uploading_demographics = State()
 
 
 # ── список шаблонов ──
@@ -129,16 +131,23 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     # текущие настройки
     randomize = data.get("randomize", False)
     use_lists = data.get("use_lists", False)
-    demographics = data.get("demographics", False)
+    demo_mode = data.get("demographics_mode", "off")  # off / standard / custom
+    demo_custom = data.get("demographics_custom", [])
     time_limit = data.get("time_limit", None)
     allow_repeat = data.get("allow_repeat", False)
+
+    demo_label = {
+        "off": "нет",
+        "standard": "стандартная",
+        "custom": f"своя ({len(demo_custom)} вопр.)",
+    }.get(demo_mode, "нет")
 
     text = (
         f"<b>Настройки эксперимента</b>\n\n"
         f"Шаблон: {tmpl}\n"
         f"Рандомизация: {'да' if randomize else 'нет'}\n"
         f"Листы: {'да' if use_lists else 'нет'}\n"
-        f"Демография: {'да' if demographics else 'нет'}\n"
+        f"Демография: {demo_label}\n"
         f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}\n"
         f"Повторное прохождение: {'да' if allow_repeat else 'нет'}\n"
     )
@@ -153,7 +162,7 @@ async def show_config_menu(message_or_cb, state: FSMContext):
             callback_data="cfg_lists",
         )],
         [InlineKeyboardButton(
-            text=f"{'✅' if demographics else '❌'} Демография",
+            text=f"Демография: {demo_label}",
             callback_data="cfg_demographics",
         )],
         [InlineKeyboardButton(
@@ -164,18 +173,124 @@ async def show_config_menu(message_or_cb, state: FSMContext):
             text=f"{'✅' if allow_repeat else '❌'} Повторное прохождение",
             callback_data="cfg_repeat",
         )],
-        [InlineKeyboardButton(text="📎 Загрузить CSV", callback_data="cfg_upload_csv")],
+    ]
+    # для свободного формата CSV-загрузки нет — структура задаётся
+    # через отдельный wizard; показываем кнопку только для шаблонов
+    if tmpl != "free_form":
+        buttons.append(
+            [InlineKeyboardButton(text="📎 Загрузить CSV", callback_data="cfg_upload_csv")]
+        )
+
+    # кнопки кастомизации — только если шаблон объявил дефолты
+    tmpl_info_for_btn = tmpl_registry.get_template(tmpl)
+    if tmpl_info_for_btn:
+        if tmpl_info_for_btn.get("default_response_options"):
+            buttons.append([InlineKeyboardButton(
+                text="🔤 Кнопки ответа", callback_data="cfg_buttons",
+            )])
+        if tmpl_info_for_btn.get("default_likert"):
+            buttons.append([InlineKeyboardButton(
+                text="📊 Шкала ответа", callback_data="cfg_likert",
+            )])
+        # инструкции фазам можно переопределить в любом шаблоне
+        # (подтянем дефолты из build_phase при заходе в подменю)
+        buttons.append([InlineKeyboardButton(
+            text="📝 Инструкции фаз", callback_data="cfg_instructions",
+        )])
+    # приветствие (description) — отдельной кнопкой, общей для всех
+    buttons.append([InlineKeyboardButton(
+        text="💬 Приветственное сообщение", callback_data="cfg_description",
+    )])
+
+    buttons += [
+        [InlineKeyboardButton(text="ℹ️ Что это всё значит?", callback_data="cfg_help")],
         [InlineKeyboardButton(text="✅ Сохранить как черновик", callback_data="cfg_save")],
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     target = message_or_cb
-    if hasattr(target, "answer"):
+    # для CallbackQuery редактируем существующее сообщение — так меню
+    # ведёт себя как интерактивная панель, без спама новыми сообщениями.
+    # для обычного Message (напр., после ввода тайм-аута текстом) шлём новое.
+    if isinstance(target, types.CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            # контент не изменился или сообщение нельзя редактировать —
+            # отправляем новое как фолбэк
+            await target.message.answer(text, reply_markup=kb)
+    else:
         await target.answer(text, reply_markup=kb)
-    elif hasattr(target, "message"):
-        await target.message.answer(text, reply_markup=kb)
 
     await state.set_state(CreateExperiment.configuring)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_help")
+async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
+    """объяснение параметров эксперимента для пользователя"""
+    await callback.answer()
+    text = (
+        "<b>Параметры эксперимента</b>\n\n"
+        "<b>🎲 Рандомизация</b>\n"
+        "Если включена — стимулы (слова, предложения и т.п.) будут "
+        "показываться каждому участнику в случайном порядке. "
+        "Если выключена — все увидят стимулы в том же порядке, "
+        "в каком они идут в CSV-файле.\n\n"
+        "<b>📋 Распределение по листам</b>\n"
+        "«Лист» — это отдельный набор стимулов. Если у вас несколько "
+        "вариантов эксперимента (например, лист A и лист B с разными "
+        "наборами стимулов), бот автоматически распределит участников по "
+        "листам поровну. Каждый участник пройдёт только один лист.\n\n"
+        "<b>👤 Демография</b>\n"
+        "Анкета, которую участник заполнит перед экспериментом. "
+        "Ответы сохраняются вместе с результатами. Три варианта:\n"
+        "• <b>Нет</b> — анкета не показывается.\n"
+        "• <b>Стандартная</b> — заранее готовый набор: "
+        "возраст (открытый ответ), пол (М/Ж/Другое), "
+        "город (открытый ответ), родной язык (открытый ответ).\n"
+        "• <b>Своя</b> — вы загружаете CSV-файл со своими вопросами. "
+        "Формат (разделитель — точка с запятой):\n"
+        "<code>key;text;type;options</code>\n"
+        "где <i>key</i> — короткий идентификатор (напр. <code>age</code>), "
+        "<i>text</i> — сам вопрос, "
+        "<i>type</i> — <code>open_text</code> (любой ответ текстом) или "
+        "<code>buttons</code> (выбор из вариантов), "
+        "<i>options</i> — варианты для <code>buttons</code>, "
+        "разделённые <code>|</code> (для <code>open_text</code> оставьте пустым).\n\n"
+        "<b>⏱ Тайм-аут</b>\n"
+        "Ограничение времени (в секундах) на ответ по каждому стимулу. "
+        "Если участник не успел — ответ засчитывается как пропуск, "
+        "эксперимент идёт дальше. «Нет» — времени неограниченно.\n\n"
+        "<b>🔁 Повторное прохождение</b>\n"
+        "Если включено — один и тот же участник может пройти эксперимент "
+        "несколько раз. Если выключено — бот не даст пройти второй раз .\n\n"
+        "<b>📎 Загрузить CSV</b>\n"
+        "Файл со стимулами. Формат зависит от выбранного шаблона "
+        "(колонки <i>stimulus</i>, <i>class</i>, и т.п.). Если фаз или листов"
+        "несколько — CSV загружается отдельно для каждой фазы и листа."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_back")
+async def cfg_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    # сбрасываем флаги ожидания ввода, чтобы следующее сообщение
+    # не было интерпретировано как недозавершённый ввод метки
+    await state.update_data(
+        waiting_button_edit=None,
+        waiting_likert_edit=None,
+        waiting_instruction_edit=None,
+        waiting_description_edit=False,
+        waiting_timeout=False,
+    )
+    await show_config_menu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_randomize")
@@ -195,11 +310,164 @@ async def toggle_lists(callback: types.CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_demographics")
-async def toggle_demographics(callback: types.CallbackQuery, state: FSMContext):
+async def show_demographics_menu(callback: types.CallbackQuery, state: FSMContext):
+    """подменю выбора режима демографии"""
     await callback.answer()
     data = await state.get_data()
-    await state.update_data(demographics=not data.get("demographics", False))
+    mode = data.get("demographics_mode", "off")
+    custom = data.get("demographics_custom", [])
+
+    text = (
+        "<b>Демографическая анкета</b>\n\n"
+        "• <b>Нет</b> — анкета не показывается.\n"
+        "• <b>Стандартная</b> — возраст, пол, город, родной язык.\n"
+        "• <b>Своя</b> — загрузите CSV со своими вопросами "
+        "(<code>key;text;type;options</code>, "
+        "<code>type</code>: <code>open_text</code>/<code>buttons</code>, "
+        "варианты для кнопок через <code>|</code>).\n\n"
+        f"Сейчас: <b>{ {'off': 'нет', 'standard': 'стандартная', 'custom': f'своя ({len(custom)} вопр.)'}.get(mode, 'нет') }</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Нет", callback_data="demo_off")],
+        [InlineKeyboardButton(text="📋 Стандартная", callback_data="demo_standard")],
+        [InlineKeyboardButton(text="📎 Загрузить свою (CSV)", callback_data="demo_upload")],
+        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "demo_off")
+async def demo_set_off(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.update_data(demographics_mode="off", demographics_custom=[])
     await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "demo_standard")
+async def demo_set_standard(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.update_data(demographics_mode="standard", demographics_custom=[])
+    await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "demo_upload")
+async def demo_ask_upload(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Показать пример", callback_data="demo_example")],
+    ])
+    await callback.message.answer(
+        "Отправьте CSV-файл с вопросами.\n\n"
+        "Колонки (разделитель — <code>;</code>):\n"
+        "• <b>key</b> — короткий идентификатор (напр. <code>age</code>)\n"
+        "• <b>text</b> — сам вопрос\n"
+        "• <b>type</b> — <code>open_text</code> или <code>buttons</code>\n"
+        "• <b>options</b> — варианты через <code>|</code> (для buttons)",
+        reply_markup=kb,
+    )
+    await state.set_state(CreateExperiment.uploading_demographics)
+
+
+DEMO_EXAMPLE_CSV = (
+    "key;text;type;options\n"
+    "age;Укажите ваш возраст:;open_text;\n"
+    "gender;Укажите ваш пол:;buttons;Мужской|Женский|Другое\n"
+    "city;Укажите город проживания:;open_text;\n"
+    "native;Укажите ваш родной язык:;open_text;\n"
+    "english_level;Ваш уровень английского:;buttons;A1|A2|B1|B2|C1|C2|Не владею\n"
+    "other_languages;Какими ещё языками владеете и на каком уровне?;open_text;\n"
+)
+
+
+@router.callback_query(CreateExperiment.uploading_demographics, F.data == "demo_example")
+async def demo_send_example(callback: types.CallbackQuery, state: FSMContext):
+    """отправить пример CSV-опросника"""
+    await callback.answer()
+    file = BufferedInputFile(
+        DEMO_EXAMPLE_CSV.encode("utf-8"),
+        filename="demographics_example.csv",
+    )
+    await callback.message.answer_document(
+        file,
+        caption=(
+            "Пример CSV-опросника. Скачайте, отредактируйте под свои "
+            "вопросы и пришлите обратно."
+        ),
+    )
+
+
+@router.message(CreateExperiment.uploading_demographics, F.document)
+async def demo_on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
+    """обработка CSV с кастомной анкетой"""
+    doc = message.document
+    if not doc.file_name.lower().endswith(".csv"):
+        await message.answer("Пожалуйста, отправьте файл в формате CSV.")
+        return
+
+    file = await bot.download(doc)
+    content = file.read()
+
+    try:
+        rows = csv_parser.parse_csv_bytes(content)
+    except Exception as e:
+        await message.answer(f"Ошибка чтения CSV: {e}")
+        return
+
+    if not rows:
+        await message.answer("CSV-файл пуст.")
+        return
+
+    # валидация и сбор вопросов
+    questions = []
+    errors = []
+    for i, row in enumerate(rows, start=2):  # строка 1 — заголовок
+        key = (row.get("key") or "").strip()
+        text = (row.get("text") or "").strip()
+        qtype = (row.get("type") or "open_text").strip().lower()
+        options_raw = (row.get("options") or "").strip()
+
+        if not key:
+            errors.append(f"Строка {i}: пустой key")
+            continue
+        if not text:
+            errors.append(f"Строка {i}: пустой text")
+            continue
+        if qtype not in ("open_text", "buttons"):
+            errors.append(f"Строка {i}: неизвестный type '{qtype}' (нужно open_text или buttons)")
+            continue
+
+        q = {"key": key, "text": text, "type": qtype}
+        if qtype == "buttons":
+            opts = [o.strip() for o in options_raw.split("|") if o.strip()]
+            if not opts:
+                errors.append(f"Строка {i}: для type=buttons нужны options через |")
+                continue
+            q["options"] = opts
+        questions.append(q)
+
+    if errors:
+        await message.answer(
+            "Найдены ошибки:\n" + "\n".join(errors[:10]) +
+            ("\n..." if len(errors) > 10 else "")
+        )
+        await state.set_state(CreateExperiment.configuring)
+        return
+
+    if not questions:
+        await message.answer("В файле нет валидных вопросов.")
+        await state.set_state(CreateExperiment.configuring)
+        return
+
+    await state.update_data(
+        demographics_mode="custom",
+        demographics_custom=questions,
+    )
+    await message.answer(f"Анкета загружена: {len(questions)} вопрос(ов).")
+    await state.set_state(CreateExperiment.configuring)
+    await show_config_menu(message, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_repeat")
@@ -208,6 +476,380 @@ async def toggle_repeat(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.update_data(allow_repeat=not data.get("allow_repeat", False))
     await show_config_menu(callback, state)
+
+
+# ── кастомизация кнопок ответа ──
+
+def _get_current_buttons(data: dict, tmpl_code: str, key: str = "main") -> list[str]:
+    """вернуть актуальные метки кнопок: кастомные или дефолт шаблона"""
+    custom = (data.get("custom_buttons") or {}).get(key)
+    if isinstance(custom, list) and custom:
+        return list(custom)
+    tmpl = tmpl_registry.get_template(tmpl_code) or {}
+    return list((tmpl.get("default_response_options") or {}).get(key, []))
+
+
+async def _show_buttons_submenu(callback: types.CallbackQuery, state: FSMContext):
+    """подменю редактирования кнопок ответа"""
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    labels = _get_current_buttons(data, tmpl_code)
+
+    if not labels:
+        await callback.message.answer("У этого шаблона нет настраиваемых кнопок.")
+        return
+
+    text = (
+        "<b>Кнопки ответа</b>\n\n"
+        "Это метки, которые увидит респондент. Порядок важен — "
+        "он связан с правильными ответами (например, для "
+        "lexical decision первая кнопка соответствует «слову», "
+        "вторая — «не-слову»).\n\n"
+        "Текущие значения:\n"
+        + "\n".join(f"{i+1}. {lbl}" for i, lbl in enumerate(labels))
+    )
+
+    buttons = []
+    for i, lbl in enumerate(labels):
+        buttons.append([InlineKeyboardButton(
+            text=f"✏️ {i+1}: {lbl}",
+            callback_data=f"btn_edit_{i}",
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="↩️ Сбросить к дефолту", callback_data="btn_reset",
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+    )])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+async def _send_buttons_submenu(message: types.Message, state: FSMContext):
+    """вариант для Message-контекста — после текстового ввода"""
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    labels = _get_current_buttons(data, tmpl_code)
+    if not labels:
+        return
+    text = (
+        "<b>Кнопки ответа</b>\n\n"
+        "Текущие значения:\n"
+        + "\n".join(f"{i+1}. {lbl}" for i, lbl in enumerate(labels))
+    )
+    buttons = [[InlineKeyboardButton(
+        text=f"✏️ {i+1}: {lbl}", callback_data=f"btn_edit_{i}",
+    )] for i, lbl in enumerate(labels)]
+    buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="btn_reset")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+async def _send_likert_submenu(message: types.Message, state: FSMContext):
+    """вариант Likert-подменю для Message-контекста"""
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    likert = _get_current_likert(data, tmpl_code)
+    scale = likert["scale"]
+    labels = likert["labels"]
+    text = (
+        "<b>Шкала ответа (Likert)</b>\n\n"
+        f"Размер: <b>{scale}</b>\n"
+        "Подписи:\n"
+        + "\n".join(
+            f"  {i}: {labels.get(str(i), str(i))}"
+            for i in range(1, scale + 1)
+        )
+    )
+    buttons = [[InlineKeyboardButton(
+        text=f"🔁 Размер шкалы: {scale} (нажмите, чтобы сменить)",
+        callback_data="lkt_scale",
+    )]]
+    for i in range(1, scale + 1):
+        buttons.append([InlineKeyboardButton(
+            text=f"✏️ {i}: {labels.get(str(i), str(i))}",
+            callback_data=f"lkt_edit_{i}",
+        )])
+    buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="lkt_reset")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_buttons")
+async def on_cfg_buttons(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _show_buttons_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data.startswith("btn_edit_"))
+async def on_button_edit(callback: types.CallbackQuery, state: FSMContext):
+    """запрос новой метки для кнопки с индексом N"""
+    await callback.answer()
+    idx = int(callback.data.replace("btn_edit_", ""))
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    labels = _get_current_buttons(data, tmpl_code)
+    if idx < 0 or idx >= len(labels):
+        return
+    await state.update_data(waiting_button_edit={"key": "main", "index": idx})
+    await callback.message.answer(
+        f"Введите новую метку для кнопки №{idx + 1} "
+        f"(сейчас: «{labels[idx]}»).\n\n"
+        f"Отправьте /cancel чтобы отменить."
+    )
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "btn_reset")
+async def on_button_reset(callback: types.CallbackQuery, state: FSMContext):
+    """сбросить кастомизацию кнопок к дефолту шаблона"""
+    await callback.answer("Сброшено к дефолту.")
+    data = await state.get_data()
+    custom = dict(data.get("custom_buttons") or {})
+    custom.pop("main", None)
+    await state.update_data(custom_buttons=custom)
+    await _show_buttons_submenu(callback, state)
+
+
+# ── кастомизация Likert-шкалы ──
+
+def _get_current_likert(data: dict, tmpl_code: str, key: str = "main") -> dict:
+    """вернуть актуальные настройки Likert: кастомные поверх дефолта"""
+    tmpl = tmpl_registry.get_template(tmpl_code) or {}
+    default = dict((tmpl.get("default_likert") or {}).get(key) or {})
+    if not default:
+        return {"scale": 5, "labels": {}}
+    default.setdefault("scale", 5)
+    default.setdefault("labels", {})
+
+    custom = (data.get("custom_likert") or {}).get(key) or {}
+    scale = custom.get("scale") if isinstance(custom.get("scale"), int) else default["scale"]
+    labels = dict(default["labels"])
+    for k, v in (custom.get("labels") or {}).items():
+        if isinstance(v, str) and v.strip():
+            labels[str(k)] = v.strip()
+    return {"scale": scale, "labels": labels}
+
+
+async def _show_likert_submenu(callback: types.CallbackQuery, state: FSMContext):
+    """подменю редактирования Likert-шкалы"""
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    likert = _get_current_likert(data, tmpl_code)
+    scale = likert["scale"]
+    labels = likert["labels"]
+
+    text = (
+        "<b>Шкала ответа (Likert)</b>\n\n"
+        "Respondent увидит набор кнопок с номерами 1..N. "
+        "Можно поменять размер шкалы и подписи к любой позиции "
+        "(обычно подписывают крайние — «совсем не...» и «очень...»).\n\n"
+        f"Текущий размер: <b>{scale}</b>\n"
+        "Подписи:\n"
+        + "\n".join(
+            f"  {i}: {labels.get(str(i), str(i))}"
+            for i in range(1, scale + 1)
+        )
+    )
+
+    buttons = [[InlineKeyboardButton(
+        text=f"🔁 Размер шкалы: {scale} (нажмите, чтобы сменить)",
+        callback_data="lkt_scale",
+    )]]
+    for i in range(1, scale + 1):
+        buttons.append([InlineKeyboardButton(
+            text=f"✏️ {i}: {labels.get(str(i), str(i))}",
+            callback_data=f"lkt_edit_{i}",
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="↩️ Сбросить к дефолту", callback_data="lkt_reset",
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+    )])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_likert")
+async def on_cfg_likert(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _show_likert_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "lkt_scale")
+async def on_likert_toggle_scale(callback: types.CallbackQuery, state: FSMContext):
+    """циклическое переключение размера шкалы: 5 → 7 → 9 → 5"""
+    await callback.answer()
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    current = _get_current_likert(data, tmpl_code)
+    next_scale = {5: 7, 7: 9, 9: 5}.get(current["scale"], 5)
+
+    custom = dict(data.get("custom_likert") or {})
+    main = dict(custom.get("main") or {})
+    main["scale"] = next_scale
+    # чистим подписи вне нового диапазона
+    existing_labels = dict(main.get("labels") or {})
+    for k in list(existing_labels.keys()):
+        try:
+            if int(k) > next_scale or int(k) < 1:
+                existing_labels.pop(k, None)
+        except ValueError:
+            existing_labels.pop(k, None)
+    main["labels"] = existing_labels
+    custom["main"] = main
+    await state.update_data(custom_likert=custom)
+    await _show_likert_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data.startswith("lkt_edit_"))
+async def on_likert_label_edit(callback: types.CallbackQuery, state: FSMContext):
+    """запрос новой подписи для позиции N"""
+    await callback.answer()
+    pos = int(callback.data.replace("lkt_edit_", ""))
+    await state.update_data(waiting_likert_edit={"key": "main", "pos": pos})
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    current = _get_current_likert(data, tmpl_code)
+    cur_label = current["labels"].get(str(pos), str(pos))
+    await callback.message.answer(
+        f"Введите новую подпись для позиции {pos} "
+        f"(сейчас: «{cur_label}»).\n\n"
+        f"Отправьте «-» чтобы убрать подпись (останется просто цифра).\n"
+        f"/cancel — отмена."
+    )
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "lkt_reset")
+async def on_likert_reset(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Сброшено к дефолту.")
+    data = await state.get_data()
+    custom = dict(data.get("custom_likert") or {})
+    custom.pop("main", None)
+    await state.update_data(custom_likert=custom)
+    await _show_likert_submenu(callback, state)
+
+
+# ── редактирование инструкций фаз ──
+
+def _get_default_instruction(tmpl_code: str, phase_index: int) -> str:
+    """получить дефолтную инструкцию для фазы, вызвав build_phase с пустыми trials"""
+    tmpl = tmpl_registry.get_template(tmpl_code) or {}
+    build_fn = tmpl.get("build_phase")
+    if not build_fn:
+        return ""
+    try:
+        phase = build_fn([], {}, phase_index)
+        return phase.get("instruction", "") or ""
+    except Exception:
+        return ""
+
+
+def _get_current_instruction(data: dict, tmpl_code: str, phase_index: int) -> str:
+    """вернуть кастомную инструкцию или дефолт"""
+    custom = data.get("custom_instructions") or {}
+    val = custom.get(phase_index)
+    if val is None:
+        val = custom.get(str(phase_index))
+    if isinstance(val, str) and val.strip():
+        return val
+    return _get_default_instruction(tmpl_code, phase_index)
+
+
+def _build_instructions_text_and_kb(data: dict) -> tuple[str, InlineKeyboardMarkup]:
+    tmpl_code = data.get("template_type", "")
+    phases_info = data.get("phases_info") or ["Основная фаза"]
+    text_lines = [
+        "<b>Инструкции фаз</b>\n",
+        "Текст, который респондент видит перед стимулами. "
+        "Можно переопределить для каждой фазы.\n",
+    ]
+    buttons = []
+    for i, name in enumerate(phases_info):
+        current = _get_current_instruction(data, tmpl_code, i)
+        preview = (current[:60] + "…") if len(current) > 60 else current
+        custom_marker = "✏️" if (data.get("custom_instructions") or {}).get(i) or \
+                                (data.get("custom_instructions") or {}).get(str(i)) else "  "
+        text_lines.append(f"<b>{i+1}. {name}</b>\n{preview or '<i>(пусто)</i>'}\n")
+        buttons.append([InlineKeyboardButton(
+            text=f"{custom_marker} Изменить фазу {i+1}",
+            callback_data=f"instr_edit_{i}",
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="↩️ Сбросить все к дефолту", callback_data="instr_reset",
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+    )])
+    return "\n".join(text_lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _show_instructions_submenu(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    text, kb = _build_instructions_text_and_kb(data)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+async def _send_instructions_submenu(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text, kb = _build_instructions_text_and_kb(data)
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_instructions")
+async def on_cfg_instructions(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _show_instructions_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data.startswith("instr_edit_"))
+async def on_instruction_edit(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    phase_idx = int(callback.data.replace("instr_edit_", ""))
+    data = await state.get_data()
+    tmpl_code = data.get("template_type", "")
+    current = _get_current_instruction(data, tmpl_code, phase_idx)
+    await state.update_data(waiting_instruction_edit={"phase_index": phase_idx})
+    await callback.message.answer(
+        f"Введите новую инструкцию для фазы {phase_idx + 1}.\n\n"
+        f"<b>Сейчас:</b>\n{current}\n\n"
+        f"Отправьте «-» чтобы сбросить к дефолту шаблона.\n"
+        f"/cancel — отмена."
+    )
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "instr_reset")
+async def on_instruction_reset_all(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Все инструкции сброшены.")
+    await state.update_data(custom_instructions={})
+    await _show_instructions_submenu(callback, state)
+
+
+# ── редактирование приветствия (description) ──
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_description")
+async def on_cfg_description(callback: types.CallbackQuery, state: FSMContext):
+    """запросить новое приветственное сообщение"""
+    await callback.answer()
+    data = await state.get_data()
+    current = data.get("description", "") or "<i>(пусто)</i>"
+    await state.update_data(waiting_description_edit=True)
+    await callback.message.answer(
+        "Введите <b>приветственное сообщение</b>. Его увидит респондент, "
+        "когда перейдёт по ссылке на эксперимент — до инструкций и "
+        "стимулов.\n\n"
+        f"<b>Сейчас:</b>\n{current}\n\n"
+        "/cancel — отмена."
+    )
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_timeout")
@@ -222,11 +864,14 @@ async def ask_timeout(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(CreateExperiment.configuring, F.text)
 async def on_config_text(message: types.Message, state: FSMContext):
-    """обработка текстового ввода в режиме настроек (тайм-аут)"""
+    """обработка текстового ввода в режиме настроек (тайм-аут, подписи)"""
     data = await state.get_data()
+    text = message.text.strip()
+
+    # тайм-аут
     if data.get("waiting_timeout"):
         try:
-            val = int(message.text.strip())
+            val = int(text)
             await state.update_data(
                 time_limit=val if val > 0 else None,
                 waiting_timeout=False,
@@ -235,6 +880,91 @@ async def on_config_text(message: types.Message, state: FSMContext):
             await message.answer("Введите целое число.")
             return
         await show_config_menu(message, state)
+        return
+
+    # редактирование метки кнопки
+    btn_req = data.get("waiting_button_edit")
+    if btn_req:
+        key = btn_req.get("key", "main")
+        idx = btn_req.get("index", -1)
+        tmpl_code = data.get("template_type", "")
+        current = _get_current_buttons(data, tmpl_code, key)
+        if 0 <= idx < len(current):
+            if len(text) > 64:
+                await message.answer(
+                    "Слишком длинная метка (Telegram ограничивает ~64 символа)."
+                )
+                return
+            current[idx] = text
+            custom = dict(data.get("custom_buttons") or {})
+            custom[key] = current
+            await state.update_data(
+                custom_buttons=custom, waiting_button_edit=None,
+            )
+            await message.answer(f"✅ Кнопка №{idx + 1} обновлена: «{text}»")
+        else:
+            await state.update_data(waiting_button_edit=None)
+        # возвращаем подменю кнопок
+        await _send_buttons_submenu(message, state)
+        return
+
+    # редактирование инструкции фазы
+    instr_req = data.get("waiting_instruction_edit")
+    if instr_req:
+        phase_idx = instr_req.get("phase_index")
+        custom = dict(data.get("custom_instructions") or {})
+        if text == "-":
+            custom.pop(phase_idx, None)
+            custom.pop(str(phase_idx), None)
+            await message.answer(
+                f"✅ Инструкция фазы {phase_idx + 1} сброшена к дефолту."
+            )
+        else:
+            if len(text) > 3000:
+                await message.answer("Слишком длинная инструкция (> 3000 символов).")
+                return
+            custom[phase_idx] = text
+            await message.answer(f"✅ Инструкция фазы {phase_idx + 1} обновлена.")
+        await state.update_data(
+            custom_instructions=custom, waiting_instruction_edit=None,
+        )
+        await _send_instructions_submenu(message, state)
+        return
+
+    # редактирование приветствия
+    if data.get("waiting_description_edit"):
+        if len(text) > 3000:
+            await message.answer("Слишком длинное сообщение (> 3000 символов).")
+            return
+        await state.update_data(
+            description=text, waiting_description_edit=False,
+        )
+        await message.answer("✅ Приветственное сообщение обновлено.")
+        await show_config_menu(message, state)
+        return
+
+    # редактирование подписи Likert
+    lkt_req = data.get("waiting_likert_edit")
+    if lkt_req:
+        key = lkt_req.get("key", "main")
+        pos = lkt_req.get("pos")
+        custom = dict(data.get("custom_likert") or {})
+        main = dict(custom.get(key) or {})
+        labels = dict(main.get("labels") or {})
+        if text == "-":
+            labels.pop(str(pos), None)
+        else:
+            if len(text) > 64:
+                await message.answer("Слишком длинная подпись.")
+                return
+            labels[str(pos)] = text
+        main["labels"] = labels
+        custom[key] = main
+        await state.update_data(
+            custom_likert=custom, waiting_likert_edit=None,
+        )
+        await message.answer(f"✅ Позиция {pos} обновлена.")
+        await _send_likert_submenu(message, state)
         return
 
 
@@ -254,12 +984,16 @@ async def ask_csv(callback: types.CallbackQuery, state: FSMContext):
     if tmpl_info:
         phases_info = tmpl_info.get("phases_info", ["Основная фаза"])
 
+    # при редактировании черновика сохраняем ранее загруженные CSV:
+    # пользователь может перезагрузить только нужные фазы/листы,
+    # остальные останутся как были.
+    existing_csv = data.get("csv_data", {}) if data.get("editing_id") else {}
     await state.update_data(
         phases_info=phases_info,
         current_phase_num=1,
         current_list="1",
         # хранилище: {(phase_num, list_id): [trials]}
-        csv_data={},
+        csv_data=existing_csv,
     )
 
     phase_name = phases_info[0]
@@ -304,29 +1038,46 @@ async def on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
     # валидация и маппинг (с учетом phase_csv_mappings для многофазных шаблонов)
     tmpl_info = tmpl_registry.get_template(template_type)
     if tmpl_info:
+        # единая валидация через утилиту — покрывает колонки, разделитель,
+        # пустые стимулы, специфику шаблона
+        from utils.validators import validate_csv_for_template
+        errors = validate_csv_for_template(template_type, rows, current_phase_num)
+        # разделим «критичные» ошибки и «предупреждения» (содержат слово «пропущены»)
+        critical = [e for e in errors if "пропущены" not in e]
+        warnings = [e for e in errors if "пропущены" in e]
+        if critical:
+            await message.answer(
+                "❌ Ошибки в CSV — файл не загружен:\n"
+                + "\n".join(f"• {e}" for e in critical)
+            )
+            return
+        if warnings:
+            await message.answer(
+                "⚠️ Предупреждения:\n" + "\n".join(f"• {w}" for w in warnings)
+            )
+
         phase_mappings = tmpl_info.get("phase_csv_mappings", {})
         if current_phase_num in phase_mappings:
             pm = phase_mappings[current_phase_num]
-            required = pm.get("required_columns", [])
             mapping = {k: v for k, v in pm.items() if k != "required_columns"}
         else:
-            required = tmpl_info.get("required_columns", [])
             mapping = tmpl_info.get("csv_mapping", {})
-        errors = csv_parser.validate_columns(rows, required)
-        if errors:
-            await message.answer("Ошибки в CSV:\n" + "\n".join(errors))
-            return
-        # доп. валидация: video_task — одинаковое количество опций
-        if template_type == "video_task":
-            from utils.validators import validate_csv_for_template
-            extra_errors = validate_csv_for_template(template_type, rows)
-            if extra_errors:
-                await message.answer("Ошибки в CSV:\n" + "\n".join(extra_errors))
-                return
     else:
         mapping = auto_detect_mapping(rows)
 
     trials = csv_parser.rows_to_trials(rows, mapping)
+
+    # пост-проверка: в trials должно быть содержание
+    non_empty = [t for t in trials if str(t.get("stimulus_content", "")).strip()]
+    if not non_empty:
+        await message.answer(
+            "❌ После парсинга не осталось ни одного стимула с содержимым. "
+            "Похоже, колонки CSV не соответствуют шаблону. "
+            f"Ожидается колонка стимула: «{mapping.get('stimulus_content', 'stimulus')}»."
+        )
+        return
+    # отбрасываем пустые строки, чтобы они не попадали в эксперимент
+    trials = non_empty
 
     # помечаем list_id и phase_num
     for t in trials:
@@ -465,10 +1216,15 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         build_fn = tmpl_info.get("build_phase")
         if build_fn:
             phases = []
+            custom_instr = data.get("custom_instructions") or {}
             for phase_num in sorted(trials_by_phase.keys()):
                 phase_trials = trials_by_phase[phase_num]
                 phase_index = phase_num - 1
                 phase = build_fn(phase_trials, data, phase_index)
+                # применяем пользовательскую инструкцию, если задана
+                override = custom_instr.get(phase_index) or custom_instr.get(str(phase_index))
+                if isinstance(override, str) and override.strip():
+                    phase["instruction"] = override
                 phases.append(phase)
         else:
             # fallback — старый формат (не должен использоваться)
@@ -498,23 +1254,52 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
                 "settings": {},
             }]
 
-    deep_link_id = "exp_" + secrets.token_urlsafe(8)
+    # режим редактирования — делаем update, не создаём новый
+    editing_id = data.get("editing_id")
 
-    experiment_data = {
-        "owner_id": callback.from_user.id,
+    # актуализируем lists_count по реально загруженным CSV
+    all_list_ids = set()
+    for key in csv_data:
+        parts = key.split("_")
+        if len(parts) == 2:
+            all_list_ids.add(parts[1])
+    lists_count = max(len(all_list_ids), 1)
+
+    # поля, которые меняются и при create, и при update
+    mutable_fields = {
         "title": data.get("title", "Без названия"),
         "description": data.get("description", ""),
         "template_type": template_type,
-        "status": "draft",
         "phases": phases,
         "randomize_trials": data.get("randomize", False),
         "use_lists": data.get("use_lists", False),
-        "lists_count": data.get("lists_count", 1),
+        "lists_count": lists_count,
         "time_limit": data.get("time_limit"),
-        "collect_demographics": data.get("demographics", False),
-        "demographics_type": "standard",
-        "demographics_custom": [],
+        "collect_demographics": data.get("demographics_mode", "off") != "off",
+        "demographics_type": "custom" if data.get("demographics_mode") == "custom" else "standard",
+        "demographics_custom": data.get("demographics_custom", []),
         "allow_repeat": data.get("allow_repeat", False),
+        "custom_buttons": data.get("custom_buttons") or {},
+        "custom_likert": data.get("custom_likert") or {},
+        "custom_instructions": data.get("custom_instructions") or {},
+    }
+
+    if editing_id:
+        # update: не трогаем owner_id, deep_link_id, status, export_settings
+        await repo.update_experiment(editing_id, mutable_fields)
+        exp_id = editing_id
+        logger.info("эксперимент %s обновлён пользователем %s", exp_id, callback.from_user.id)
+        await state.clear()
+        await callback.message.answer("✅ Изменения сохранены.")
+        await show_experiment_detail(callback.message, exp_id)
+        return
+
+    # create — новый эксперимент
+    deep_link_id = "exp_" + secrets.token_urlsafe(8)
+    experiment_data = {
+        **mutable_fields,
+        "owner_id": callback.from_user.id,
+        "status": "draft",
         "export_settings": {},
         "deep_link_id": deep_link_id,
     }
@@ -559,7 +1344,11 @@ async def show_experiment_detail(message, experiment_id: str):
     if exp["status"] == "draft":
         buttons.append([InlineKeyboardButton(
             text="🟢 Активировать",
-            callback_data=f"activate_{experiment_id}",
+            callback_data=f"act_ask_{experiment_id}",
+        )])
+        buttons.append([InlineKeyboardButton(
+            text="✏️ Редактировать",
+            callback_data=f"edit_draft_{experiment_id}",
         )])
     elif exp["status"] == "active":
         buttons.append([InlineKeyboardButton(
@@ -606,6 +1395,79 @@ async def on_experiment_detail(callback: types.CallbackQuery):
     await show_experiment_detail(callback.message, exp_id)
 
 
+# ── редактирование черновика ──
+
+@router.callback_query(F.data.startswith("edit_draft_"))
+async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
+    """загрузить черновик в FSM state и открыть меню настроек"""
+    exp_id = callback.data.replace("edit_draft_", "")
+    exp = await repo.get_experiment(exp_id)
+    if not exp:
+        await callback.answer("Эксперимент не найден.", show_alert=True)
+        return
+    if exp.get("status") != "draft":
+        await callback.answer(
+            "Редактировать можно только черновики. Активный эксперимент "
+            "изменять нельзя — это сломает консистентность данных.",
+            show_alert=True,
+        )
+        return
+    await callback.answer()
+
+    # восстанавливаем режим демографии
+    if not exp.get("collect_demographics"):
+        demo_mode = "off"
+    elif exp.get("demographics_type") == "custom":
+        demo_mode = "custom"
+    else:
+        demo_mode = "standard"
+
+    # восстанавливаем csv_data из фаз: ключ "{phase_num}_{list_id}"
+    csv_data: dict[str, list] = {}
+    for phase_idx, phase in enumerate(exp.get("phases", [])):
+        phase_num = phase_idx + 1
+        for trial in phase.get("trials", []):
+            list_id = str(trial.get("list_id") or "1")
+            key = f"{phase_num}_{list_id}"
+            csv_data.setdefault(key, []).append(trial)
+
+    # список фаз для шаблона (нужен в меню «Что загрузить дальше»)
+    tmpl_info = tmpl_registry.get_template(exp.get("template_type", ""))
+    phases_info = ["Основная фаза"]
+    if tmpl_info:
+        phases_info = tmpl_info.get("phases_info", ["Основная фаза"])
+    # для free_form phases_info возьмём из самих фаз (они уже сформированы)
+    elif exp.get("phases"):
+        phases_info = [p.get("title", f"Фаза {i+1}")
+                       for i, p in enumerate(exp["phases"])]
+
+    await state.clear()
+    await state.update_data(
+        editing_id=exp_id,  # маркер: on_save_draft сделает update, а не create
+        title=exp.get("title", ""),
+        description=exp.get("description", ""),
+        template_type=exp.get("template_type", ""),
+        randomize=exp.get("randomize_trials", False),
+        use_lists=exp.get("use_lists", False),
+        demographics_mode=demo_mode,
+        demographics_custom=exp.get("demographics_custom", []),
+        time_limit=exp.get("time_limit"),
+        allow_repeat=exp.get("allow_repeat", False),
+        phases_info=phases_info,
+        current_phase_num=1,
+        current_list="1",
+        csv_data=csv_data,
+        lists_count=exp.get("lists_count", 1),
+        custom_buttons=exp.get("custom_buttons") or {},
+        custom_likert=exp.get("custom_likert") or {},
+        custom_instructions=exp.get("custom_instructions") or {},
+        # для free_form: сохраняем фазы как есть, on_save_draft их подхватит
+        free_form_phases=exp.get("phases", []) if exp.get("template_type") == "free_form" else [],
+    )
+    await state.set_state(CreateExperiment.configuring)
+    await show_config_menu(callback, state)
+
+
 # ── загрузка медиа ──
 
 @router.callback_query(F.data.startswith("upload_media_"))
@@ -618,12 +1480,69 @@ async def on_upload_media(callback: types.CallbackQuery, state: FSMContext):
 
 # ── активация / деактивация ──
 
-@router.callback_query(F.data.startswith("activate_"))
-async def on_activate(callback: types.CallbackQuery, bot: Bot):
+@router.callback_query(F.data.startswith("act_ask_"))
+async def on_activate_ask(callback: types.CallbackQuery):
+    """шаг 1: спросить подтверждение и заранее прогнать валидацию"""
     await callback.answer()
-    exp_id = callback.data.replace("activate_", "")
+    exp_id = callback.data.replace("act_ask_", "")
 
-    # валидация перед активацией
+    from utils.validators import validate_experiment
+    exp = await repo.get_experiment(exp_id)
+    if not exp:
+        await callback.message.answer("Эксперимент не найден.")
+        return
+
+    errors = validate_experiment(exp)
+    if errors:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="✏️ Вернуться к редактированию",
+                callback_data=f"edit_draft_{exp_id}",
+            )],
+            [InlineKeyboardButton(
+                text="← К эксперименту",
+                callback_data=f"exp_detail_{exp_id}",
+            )],
+        ])
+        await callback.message.answer(
+            "❌ <b>Эксперимент нельзя активировать.</b>\n\n"
+            "Найдены проблемы:\n"
+            + "\n".join(f"• {e}" for e in errors)
+            + "\n\nИсправьте их и попробуйте снова.",
+            reply_markup=kb,
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🟢 Да, активировать",
+            callback_data=f"act_do_{exp_id}",
+        )],
+        [InlineKeyboardButton(
+            text="← Отмена",
+            callback_data=f"exp_detail_{exp_id}",
+        )],
+    ])
+    await callback.message.answer(
+        "⚠️ <b>После активации нельзя изменить черновик.</b>\n\n"
+        "Как только эксперимент станет активным, структура фаз, стимулы, "
+        "настройки и анкета будут зафиксированы. Это нужно для чистоты "
+        "данных: все респонденты должны пройти одинаковый протокол.\n\n"
+        "Если понадобится что-то поменять — эксперимент можно будет "
+        "деактивировать обратно в черновик, но это сбросит часть данных "
+        "сбора. Лучше проверить всё сейчас.\n\n"
+        "Вы уверены?",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("act_do_"))
+async def on_activate_do(callback: types.CallbackQuery, bot: Bot):
+    """шаг 2: реально активируем"""
+    await callback.answer()
+    exp_id = callback.data.replace("act_do_", "")
+
+    # повторная валидация — черновик мог измениться между шагами
     from utils.validators import validate_experiment
     exp = await repo.get_experiment(exp_id)
     if not exp:
@@ -632,7 +1551,8 @@ async def on_activate(callback: types.CallbackQuery, bot: Bot):
     errors = validate_experiment(exp)
     if errors:
         await callback.message.answer(
-            "Не удалось активировать. Ошибки:\n" + "\n".join(f"• {e}" for e in errors)
+            "❌ Не удалось активировать. Проблемы:\n"
+            + "\n".join(f"• {e}" for e in errors)
         )
         return
 
@@ -694,7 +1614,13 @@ async def on_preview(callback: types.CallbackQuery, bot: Bot):
     await repo.update_session(session_id, {"prepared_phases": phases})
     session = await repo.get_session(session_id)
 
-    await callback.message.answer("Запускаю превью эксперимента...")
+    # показываем приветственный экран — тот же, что увидит респондент
+    welcome = (
+        f"<b>{experiment.get('title', '')}</b>\n\n"
+        f"{experiment.get('description', '') or '<i>(приветствие не задано)</i>'}"
+        f"\n\n<i>— превью в роли участника —</i>"
+    )
+    await callback.message.answer(welcome)
     await runner.present_trial(bot, callback.from_user.id, session, experiment)
 
 

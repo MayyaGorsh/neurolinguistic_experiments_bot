@@ -6,7 +6,7 @@
 - Video task
 """
 
-from templates.registry import register
+from templates.registry import register, get_response_options
 
 
 # ── Picture selection ──
@@ -15,6 +15,7 @@ from templates.registry import register
 def build_picture_selection(trials, config, phase_index=0):
     import random
 
+    options = get_response_options(config, ["Картинка 1", "Картинка 2"])
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
@@ -32,13 +33,13 @@ def build_picture_selection(trials, config, phase_index=0):
             "img_1": images[0],
             "img_2": images[1],
         }
-        t["response_options"] = ["Картинка 1", "Картинка 2"]
+        t["response_options"] = options
 
         if correct:
             if correct.strip() == images[0]:
-                t["correct_answer"] = "Картинка 1"
+                t["correct_answer"] = options[0]
             elif correct.strip() == images[1]:
-                t["correct_answer"] = "Картинка 2"
+                t["correct_answer"] = options[1]
 
     return {
         "phase_index": phase_index,
@@ -63,6 +64,7 @@ register("picture_selection", {
     "build_phase": build_picture_selection,
     "export_columns": ["pair_id", "img_1", "img_2"],
     "phases_info": ["Picture Selection"],
+    "default_response_options": {"main": ["Картинка 1", "Картинка 2"]},
 })
 
 
@@ -70,6 +72,9 @@ register("picture_selection", {
 # CSV: stimulus, pair_id, img_1_filename, img_2_filename, img_3_filename, correct_img (опц.)
 
 def build_covered_box(trials, config, phase_index=0):
+    options = get_response_options(
+        config, ["Картинка 1", "Картинка 2", "Картинка 3"]
+    )
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
@@ -83,16 +88,16 @@ def build_covered_box(trials, config, phase_index=0):
             "img_2": img2,
             "img_3": img3,
         }
-        t["response_options"] = ["Картинка 1", "Картинка 2", "Картинка 3"]
+        t["response_options"] = options
 
         if correct:
             correct = correct.strip()
             if correct == img1:
-                t["correct_answer"] = "Картинка 1"
+                t["correct_answer"] = options[0]
             elif correct == img2:
-                t["correct_answer"] = "Картинка 2"
+                t["correct_answer"] = options[1]
             elif correct == img3:
-                t["correct_answer"] = "Картинка 3"
+                t["correct_answer"] = options[2]
 
     return {
         "phase_index": phase_index,
@@ -120,6 +125,9 @@ register("covered_box", {
     "build_phase": build_covered_box,
     "export_columns": ["pair_id", "img_1", "img_2", "img_3"],
     "phases_info": ["Covered Box"],
+    "default_response_options": {
+        "main": ["Картинка 1", "Картинка 2", "Картинка 3"],
+    },
 })
 
 

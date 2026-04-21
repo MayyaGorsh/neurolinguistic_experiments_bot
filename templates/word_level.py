@@ -8,7 +8,7 @@
 - Word translation (open)
 """
 
-from templates.registry import register
+from templates.registry import register, get_response_options, get_likert_config
 
 
 # ── Lexical decision ──
@@ -16,14 +16,14 @@ from templates.registry import register
 # кнопки "Слово" / "Не слово", измерение RT
 
 def build_lexical_decision(trials, config, phase_index=0):
+    options = get_response_options(config, ["Слово", "Не слово"])
     for t in trials:
-        if not t.get("response_options"):
-            t["response_options"] = ["Слово", "Не слово"]
+        t["response_options"] = options
         cls = t.get("auxiliary", {}).get("class", "").strip().lower()
         if cls in ("word", "слово"):
-            t["correct_answer"] = "Слово"
+            t["correct_answer"] = options[0]
         elif cls in ("nonword", "не слово"):
-            t["correct_answer"] = "Не слово"
+            t["correct_answer"] = options[1]
     return {
         "phase_index": phase_index,
         "title": "Lexical Decision",
@@ -46,6 +46,7 @@ register("lexical_decision", {
     "build_phase": build_lexical_decision,
     "export_columns": ["class"],
     "phases_info": ["Lexical Decision"],
+    "default_response_options": {"main": ["Слово", "Не слово"]},
 })
 
 
@@ -61,6 +62,17 @@ def build_predictability_rating(trials, config, phase_index=0):
         right = aux.get("right_context", "")
         sentence = f"{left} ___ {right}" if right else f"{left} ___"
         t["stimulus_content"] = f"{sentence}\n\nСлово: <b>{target}</b>"
+
+    likert = get_likert_config(config, {
+        "scale": 5,
+        "labels": {
+            "1": "Совсем не ожидаемо",
+            "2": "2",
+            "3": "Нейтрально",
+            "4": "4",
+            "5": "Очень ожидаемо",
+        },
+    })
     return {
         "phase_index": phase_index,
         "title": "Predictability Rating",
@@ -71,14 +83,8 @@ def build_predictability_rating(trials, config, phase_index=0):
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {
-            "likert_scale": 5,
-            "likert_labels": {
-                "1": "Совсем не ожидаемо",
-                "2": "2",
-                "3": "Нейтрально",
-                "4": "4",
-                "5": "Очень ожидаемо",
-            },
+            "likert_scale": likert["scale"],
+            "likert_labels": likert["labels"],
         },
     }
 
@@ -92,6 +98,16 @@ register("predictability_rating", {
     "build_phase": build_predictability_rating,
     "export_columns": ["left_context", "target", "right_context"],
     "phases_info": ["Predictability Rating"],
+    "default_likert": {"main": {
+        "scale": 5,
+        "labels": {
+            "1": "Совсем не ожидаемо",
+            "2": "2",
+            "3": "Нейтрально",
+            "4": "4",
+            "5": "Очень ожидаемо",
+        },
+    }},
 })
 
 

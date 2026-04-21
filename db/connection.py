@@ -1,8 +1,10 @@
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_URI, DB_NAME
 
-# клиент и база данных — инициализируются при импорте
-client = AsyncIOMotorClient(MONGO_URI)
+# для Atlas нужен tlsCAFile, для локального mongodb:// — нет
+_kwargs = {"tlsCAFile": certifi.where()} if "mongodb+srv" in MONGO_URI else {}
+client = AsyncIOMotorClient(MONGO_URI, **_kwargs)
 db = client[DB_NAME]
 
 # коллекции

@@ -11,11 +11,34 @@ from typing import Optional
 logger = logging.getLogger("bot")
 
 
+def _detect_delimiter(first_line: str) -> str:
+    """определить разделитель CSV по первой строке (заголовку).
+
+    поддерживаем только «;» и табуляцию: запятая опасна, потому что
+    встречается внутри стимулов (напр., в предложениях) — без строгого
+    квотирования такой CSV распарсится криво.
+    """
+    candidates = [";", "\t"]
+    counts = {d: first_line.count(d) for d in candidates}
+    best = max(counts, key=lambda d: (counts[d], d == ";"))
+    return best if counts[best] > 0 else ";"
+
+
 def parse_csv_text(text: str) -> list[dict]:
-    """прочитать CSV-текст и вернуть список словарей (строк)"""
-    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    """прочитать CSV-текст и вернуть список словарей (строк).
+    разделитель определяется автоматически: ; , или \\t."""
+    if not text:
+        return []
+    # срезаем BOM (Excel добавляет)
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    first_line = text.split("\n", 1)[0]
+    delim = _detect_delimiter(first_line)
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
     rows = []
     for row in reader:
+        # None-ключ появляется, если строк больше колонок (трэш справа)
+        row.pop(None, None)
         rows.append(dict(row))
     return rows
 

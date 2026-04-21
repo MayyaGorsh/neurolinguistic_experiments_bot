@@ -11,7 +11,7 @@
 - Interpretation generation
 """
 
-from templates.registry import register
+from templates.registry import register, get_response_options, get_likert_config
 
 
 # ── Sensicality judgment ──
@@ -19,8 +19,9 @@ from templates.registry import register
 # кнопки "Осмысленно" / "Неосмысленно" заданы в шаблоне
 
 def build_sensicality(trials, config, phase_index=0):
+    options = get_response_options(config, ["Осмысленно", "Неосмысленно"])
     for t in trials:
-        t["response_options"] = ["Осмысленно", "Неосмысленно"]
+        t["response_options"] = options
     return {
         "phase_index": phase_index,
         "title": "Sensicality Judgment",
@@ -42,6 +43,7 @@ register("sensicality_judgment", {
     "build_phase": build_sensicality,
     "export_columns": [],
     "phases_info": ["Sensicality Judgment"],
+    "default_response_options": {"main": ["Осмысленно", "Неосмысленно"]},
 })
 
 
@@ -54,22 +56,27 @@ def build_acceptability(trials, config, phase_index=0):
     presentation = config.get("presentation_mode", "single")
 
     if resp_format == "yes_no":
+        options = get_response_options(config, ["Приемлемо", "Неприемлемо"])
         for t in trials:
-            t["response_options"] = ["Приемлемо", "Неприемлемо"]
+            t["response_options"] = options
         response_type = "buttons"
     else:
-        scale = config.get("likert_scale", 5)
+        default_scale = config.get("likert_scale", 5)
         label_mode = config.get("label_mode", "endpoints")
-        labels = {}
+        default_labels = {}
         if label_mode == "full":
-            labels = {str(i): f"{i}" for i in range(1, scale + 1)}
-            labels["1"] = "Совсем неприемлемо"
-            labels[str(scale)] = "Полностью приемлемо"
+            default_labels = {str(i): f"{i}" for i in range(1, default_scale + 1)}
+            default_labels["1"] = "Совсем неприемлемо"
+            default_labels[str(default_scale)] = "Полностью приемлемо"
         elif label_mode == "endpoints":
-            labels["1"] = "Совсем неприемлемо"
-            labels[str(scale)] = "Полностью приемлемо"
-        settings["likert_scale"] = scale
-        settings["likert_labels"] = labels
+            default_labels["1"] = "Совсем неприемлемо"
+            default_labels[str(default_scale)] = "Полностью приемлемо"
+        likert = get_likert_config(config, {
+            "scale": default_scale,
+            "labels": default_labels,
+        })
+        settings["likert_scale"] = likert["scale"]
+        settings["likert_labels"] = likert["labels"]
         response_type = "likert"
 
     if presentation in ("joint_one_rating", "joint_two_ratings"):
@@ -103,6 +110,11 @@ register("acceptability_judgment", {
     "build_phase": build_acceptability,
     "export_columns": ["stimulus2"],
     "phases_info": ["Acceptability Judgment"],
+    "default_response_options": {"main": ["Приемлемо", "Неприемлемо"]},
+    "default_likert": {"main": {
+        "scale": 5,
+        "labels": {"1": "Совсем неприемлемо", "5": "Полностью приемлемо"},
+    }},
 })
 
 
@@ -111,13 +123,15 @@ register("acceptability_judgment", {
 # одна фаза, контекст + утверждение
 
 def build_tvjt(trials, config, phase_index=0):
+    default_opts = get_response_options(config, ["Да", "Нет", "Не знаю"])
     for t in trials:
         aux = t.get("auxiliary", {})
         context = aux.get("context", "")
         if context:
             t["stimulus_content"] = f"{context}\n\n{t['stimulus_content']}"
+        # опции из CSV имеют приоритет над дефолтными/кастомными
         if not t.get("response_options"):
-            t["response_options"] = ["Да", "Нет", "Не знаю"]
+            t["response_options"] = default_opts
 
     return {
         "phase_index": phase_index,
@@ -142,6 +156,7 @@ register("tvjt", {
     "build_phase": build_tvjt,
     "export_columns": ["context"],
     "phases_info": ["Truth Value Judgment"],
+    "default_response_options": {"main": ["Да", "Нет", "Не знаю"]},
 })
 
 
@@ -153,9 +168,10 @@ register("tvjt", {
 def build_statement_verification(trials, config, phase_index=0):
     """единая build_phase: phase_index=0 — верификация, phase_index=1 — контроль"""
     if phase_index == 0:
+        default_opts = get_response_options(config, ["Верно", "Неверно", "Не знаю"])
         for t in trials:
             if not t.get("response_options"):
-                t["response_options"] = ["Верно", "Неверно", "Не знаю"]
+                t["response_options"] = default_opts
         return {
             "phase_index": 0,
             "title": "Statement Verification",
@@ -196,6 +212,7 @@ register("statement_verification", {
     },
     "export_columns": [],
     "phases_info": ["Statement Verification", "Контроль знания"],
+    "default_response_options": {"main": ["Верно", "Неверно", "Не знаю"]},
 })
 
 
@@ -331,6 +348,7 @@ register("maze", {
 # CSV: text_original, text_repeated, changed_word_original, changed_word_new
 
 def build_text_change(trials, config, phase_index=0):
+    options = get_response_options(config, ["Изменение было", "Изменения не было"])
     for t in trials:
         aux = t.get("auxiliary", {})
         t["stimulus_metadata"] = {
@@ -338,11 +356,11 @@ def build_text_change(trials, config, phase_index=0):
             "changed_word_original": aux.get("changed_word_original", ""),
             "changed_word_new": aux.get("changed_word_new", ""),
         }
-        t["response_options"] = ["Изменение было", "Изменения не было"]
+        t["response_options"] = options
         if aux.get("changed_word_original", "").strip():
-            t["correct_answer"] = "Изменение было"
+            t["correct_answer"] = options[0]
         else:
-            t["correct_answer"] = "Изменения не было"
+            t["correct_answer"] = options[1]
 
     return {
         "phase_index": phase_index,
@@ -369,6 +387,7 @@ register("text_change_detection", {
     "build_phase": build_text_change,
     "export_columns": ["changed_word_original", "changed_word_new"],
     "phases_info": ["Text Change Detection"],
+    "default_response_options": {"main": ["Изменение было", "Изменения не было"]},
 })
 
 
@@ -395,13 +414,14 @@ def build_probe_recognition(trials, config, phase_index=0):
             "settings": {},
         }
     else:
+        options = get_response_options(config, ["Да", "Нет"])
         for t in trials:
-            t["response_options"] = ["Да", "Нет"]
+            t["response_options"] = options
             correct_raw = (t.get("correct_answer") or "").strip().lower()
             if correct_raw in ("yes", "да", "1"):
-                t["correct_answer"] = "Да"
+                t["correct_answer"] = options[0]
             elif correct_raw in ("no", "нет", "0"):
-                t["correct_answer"] = "Нет"
+                t["correct_answer"] = options[1]
         return {
             "phase_index": phase_index,
             "title": "Фаза тестирования",
@@ -432,6 +452,7 @@ register("probe_recognition", {
     },
     "export_columns": [],
     "phases_info": ["Фаза запоминания", "Фаза тестирования"],
+    "default_response_options": {"main": ["Да", "Нет"]},
 })
 
 

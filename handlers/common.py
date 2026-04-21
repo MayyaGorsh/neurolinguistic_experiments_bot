@@ -4,7 +4,7 @@
 
 import logging
 
-from aiogram import Router, types
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
@@ -36,22 +36,22 @@ async def cmd_help(message: types.Message):
 
 
 # обработка стикеров, анимаций и прочего
-@router.message(types.ContentType.STICKER)
+@router.message(F.sticker)
 async def on_sticker(message: types.Message):
     await message.answer("Стикеры не поддерживаются. Используйте текст или кнопки.")
 
 
-@router.message(types.ContentType.ANIMATION)
+@router.message(F.animation)
 async def on_animation(message: types.Message):
     await message.answer("GIF не поддерживаются.")
 
 
-@router.message(types.ContentType.CONTACT)
+@router.message(F.contact)
 async def on_contact(message: types.Message):
     await message.answer("Контакты не поддерживаются.")
 
 
-@router.message(types.ContentType.LOCATION)
+@router.message(F.location)
 async def on_location(message: types.Message):
     await message.answer("Геолокация не поддерживается.")
 

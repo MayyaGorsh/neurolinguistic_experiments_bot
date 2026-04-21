@@ -52,8 +52,15 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
         await advance_phase(bot, chat_id, session, experiment)
         return
 
-    # если это начало фазы — показать инструкцию
-    if trial_idx == 0 and phase.get("instruction"):
+    # если это начало фазы и инструкция ещё не показывалась — показать её.
+    # shown_instructions хранит phase_idx, для которых инструкция уже показана,
+    # чтобы не зацикливаться при повторных вызовах present_trial.
+    shown_instructions = session.get("shown_instructions", [])
+    if (
+        trial_idx == 0
+        and phase.get("instruction")
+        and phase_idx not in shown_instructions
+    ):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="Далее",
