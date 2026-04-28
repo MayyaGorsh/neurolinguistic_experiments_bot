@@ -66,9 +66,11 @@ async def on_begin_experiment(callback: types.CallbackQuery, bot: Bot):
 
     # подготавливаем пробы для каждой фазы (фильтр по листу + рандомизация)
     phases = experiment.get("phases", [])
+    randomize_buttons = experiment.get("randomize_button_positions", False)
     for i, phase in enumerate(phases):
         prepared = runner.prepare_trials_for_session(
-            phase, session_data["assigned_list"]
+            phase, session_data["assigned_list"],
+            randomize_button_positions=randomize_buttons,
         )
         phases[i]["trials"] = prepared
 
@@ -108,9 +110,26 @@ async def start_experiment_flow(
 async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
     """респондент прочел инструкцию — показываем первую пробу фазы"""
     await callback.answer()
-    session_id = callback.data.replace("instr_ok_", "")
+    # формат: instr_ok_{session_id}_{phase_idx}
+    parts = callback.data.split("_")
+    if len(parts) < 4:
+        return
+    session_id = parts[2]
+    try:
+        cb_phase_idx = int(parts[3])
+    except ValueError:
+        return
+
     session = await repo.get_session(session_id)
     if not session:
+        return
+
+    # клик по инструкции уже пройденной фазы (прокрутил наверх) — игнор
+    current_phase = session.get("current_phase", 0)
+    if cb_phase_idx != current_phase:
+        await callback.answer(
+            "Эта инструкция уже пройдена.", show_alert=True,
+        )
         return
 
     experiment = await repo.get_experiment(session["experiment_id"])
@@ -120,10 +139,9 @@ async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
     # помечаем инструкцию текущей фазы как показанную — чтобы
     # present_trial не нарисовал её снова (именно из-за этого раньше
     # получалась бесконечная петля «Далее»)
-    phase_idx = session.get("current_phase", 0)
     shown = list(session.get("shown_instructions", []))
-    if phase_idx not in shown:
-        shown.append(phase_idx)
+    if current_phase not in shown:
+        shown.append(current_phase)
         await repo.update_session(session_id, {"shown_instructions": shown})
         session = await repo.get_session(session_id)
 
@@ -138,18 +156,37 @@ async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("ans_"))
 async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
     """респондент нажал кнопку ответа"""
-    await callback.answer()
+    # формат: ans_{session_id}_{phase_idx}_{trial_idx}_{option_or_next}
     parts = callback.data.split("_")
-    # формат: ans_{session_id}_{trial_idx}_{option_index_or_next}
-    if len(parts) < 4:
+    if len(parts) < 5:
+        await callback.answer()
         return
 
     session_id = parts[1]
-    option_str = parts[3]
+    try:
+        cb_phase_idx = int(parts[2])
+        cb_trial_idx = int(parts[3])
+    except ValueError:
+        await callback.answer()
+        return
+    option_str = parts[4]
 
     session = await repo.get_session(session_id)
     if not session:
+        await callback.answer()
         return
+
+    # отсекаем клики по старым пробам/фазам (прокрутка вверх).
+    # ответ записываем только по текущей паре phase/trial из сессии.
+    current_phase = session.get("current_phase", 0)
+    current_trial = session.get("current_trial", 0)
+    if cb_phase_idx != current_phase or cb_trial_idx != current_trial:
+        await callback.answer(
+            "Эта проба уже пройдена.", show_alert=True,
+        )
+        return
+
+    await callback.answer()
 
     experiment = await repo.get_experiment(session["experiment_id"])
     if not experiment:
@@ -159,15 +196,18 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
     exp_copy = dict(experiment)
     exp_copy["phases"] = prepared
 
-    phase = prepared[session["current_phase"]]
-    trial = phase["trials"][session["current_trial"]]
+    phase = prepared[current_phase]
+    trial = phase["trials"][current_trial]
 
     # определяем текст ответа
     if option_str == "next":
         raw_response = "_next_"
         option_index = None
     else:
-        option_index = int(option_str)
+        try:
+            option_index = int(option_str)
+        except ValueError:
+            return
         response_type = phase.get("response_type", "buttons")
         if response_type == "likert":
             raw_response = str(option_index)
@@ -189,19 +229,35 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("demo_"))
 async def on_demo_button(callback: types.CallbackQuery, bot: Bot):
     """респондент ответил на вопрос демографии кнопкой"""
-    await callback.answer()
     parts = callback.data.split("_")
     # формат: demo_{session_id}_{q_index}_{option_index}
     if len(parts) < 4:
+        await callback.answer()
         return
 
     session_id = parts[1]
-    q_index = int(parts[2])
-    opt_index = int(parts[3])
+    try:
+        q_index = int(parts[2])
+        opt_index = int(parts[3])
+    except ValueError:
+        await callback.answer()
+        return
 
     session = await repo.get_session(session_id)
     if not session:
+        await callback.answer()
         return
+
+    # отсекаем клик по старому вопросу демографии (прокрутил вверх).
+    # ответ принимаем только на текущий q_index из сессии.
+    current_demo_idx = session.get("demographics_index", 0)
+    if q_index != current_demo_idx:
+        await callback.answer(
+            "Этот вопрос уже пройден.", show_alert=True,
+        )
+        return
+
+    await callback.answer()
 
     experiment = await repo.get_experiment(session["experiment_id"])
     if not experiment:

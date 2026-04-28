@@ -11,6 +11,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
+from utils.ui import render_screen
 
 router = Router()
 logger = logging.getLogger("bot")
@@ -25,9 +26,16 @@ class PromoStates(StatesGroup):
 async def on_promo_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     participants = await repo.get_past_participants()
-    await callback.message.answer(
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
+    ])
+    await render_screen(
+        callback,
         f"Прошлых участников: {len(participants)}\n\n"
-        "Введите текст для рассылки:"
+        "Введите текст для рассылки сообщением.\n"
+        "/cancel — отмена.",
+        kb,
+        state=state,
     )
     await state.set_state(PromoStates.entering_text)
 
@@ -40,11 +48,13 @@ async def on_promo_text(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="Отправить", callback_data="promo_send")],
         [InlineKeyboardButton(text="Отмена", callback_data="back_to_menu")],
     ])
-    await message.answer(
+    await render_screen(
+        message,
         f"Текст рассылки:\n\n{message.text.strip()}\n\n"
         f"Получателей: {len(participants)}\n"
         "Подтвердите отправку.",
-        reply_markup=kb,
+        kb,
+        state=state,
     )
     await state.set_state(PromoStates.confirming)
 
@@ -75,7 +85,13 @@ async def on_promo_send(callback: types.CallbackQuery, state: FSMContext, bot: B
         "timestamp": datetime.utcnow(),
     })
 
-    await callback.message.answer(
-        f"Рассылка завершена.\nОтправлено: {sent}, не доставлено: {failed}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
+    ])
+    await render_screen(
+        callback,
+        f"Рассылка завершена.\nОтправлено: {sent}, не доставлено: {failed}",
+        kb,
+        state=state,
     )
     await state.clear()

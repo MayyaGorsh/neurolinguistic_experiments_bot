@@ -19,6 +19,7 @@ from aiogram.types import (
 from db import repositories as repo
 from utils import export as export_util
 from utils import csv_parser
+from utils.ui import render_screen as _render_screen
 from templates import registry as tmpl_registry
 
 router = Router()
@@ -76,8 +77,11 @@ async def on_create_experiment(callback: types.CallbackQuery, state: FSMContext)
         buttons.append([InlineKeyboardButton(
             text=label, callback_data=f"tmpl_{code}"
         )])
+    buttons.append([InlineKeyboardButton(
+        text="← В главное меню", callback_data="back_to_menu",
+    )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.answer("Выберите шаблон эксперимента:", reply_markup=kb)
+    await _render_screen(callback, "Выберите шаблон эксперимента:", kb, state=state)
     await state.set_state(CreateExperiment.choosing_template)
 
 
@@ -89,7 +93,13 @@ async def on_template_chosen(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     template_code = callback.data.replace("tmpl_", "")
     await state.update_data(template_type=template_code)
-    await callback.message.answer("Введите название эксперимента:")
+    await _render_screen(
+        callback,
+        f"Шаблон: <b>{template_code}</b>\n\n"
+        "Введите название эксперимента сообщением.\n"
+        "/cancel — отменить.",
+        state=state,
+    )
     await state.set_state(CreateExperiment.entering_title)
 
 
@@ -130,6 +140,8 @@ async def show_config_menu(message_or_cb, state: FSMContext):
 
     # текущие настройки
     randomize = data.get("randomize", False)
+    randomize_buttons = data.get("randomize_button_positions", False)
+    delete_previous = data.get("delete_previous_trials", True)
     use_lists = data.get("use_lists", False)
     demo_mode = data.get("demographics_mode", "off")  # off / standard / custom
     demo_custom = data.get("demographics_custom", [])
@@ -146,6 +158,8 @@ async def show_config_menu(message_or_cb, state: FSMContext):
         f"<b>Настройки эксперимента</b>\n\n"
         f"Шаблон: {tmpl}\n"
         f"Рандомизация: {'да' if randomize else 'нет'}\n"
+        f"Рандомизация позиций кнопок: {'да' if randomize_buttons else 'нет'}\n"
+        f"Чистить предыдущие пробы: {'да' if delete_previous else 'нет'}\n"
         f"Листы: {'да' if use_lists else 'нет'}\n"
         f"Демография: {demo_label}\n"
         f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}\n"
@@ -156,6 +170,14 @@ async def show_config_menu(message_or_cb, state: FSMContext):
         [InlineKeyboardButton(
             text=f"{'✅' if randomize else '❌'} Рандомизация",
             callback_data="cfg_randomize",
+        )],
+        [InlineKeyboardButton(
+            text=f"{'✅' if randomize_buttons else '❌'} Рандомизация позиций кнопок",
+            callback_data="cfg_randomize_buttons",
+        )],
+        [InlineKeyboardButton(
+            text=f"{'✅' if delete_previous else '❌'} Чистить предыдущие пробы",
+            callback_data="cfg_delete_previous",
         )],
         [InlineKeyboardButton(
             text=f"{'✅' if use_lists else '❌'} Распределение по листам",
@@ -208,19 +230,10 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    target = message_or_cb
-    # для CallbackQuery редактируем существующее сообщение — так меню
-    # ведёт себя как интерактивная панель, без спама новыми сообщениями.
-    # для обычного Message (напр., после ввода тайм-аута текстом) шлём новое.
-    if isinstance(target, types.CallbackQuery):
-        try:
-            await target.message.edit_text(text, reply_markup=kb)
-        except TelegramBadRequest:
-            # контент не изменился или сообщение нельзя редактировать —
-            # отправляем новое как фолбэк
-            await target.message.answer(text, reply_markup=kb)
-    else:
-        await target.answer(text, reply_markup=kb)
+    # _render_screen сам решит, редактировать или слать новое; и одновременно
+    # обновит active_menu_msg_id в state, чтобы StaleMenuGuard блокировал
+    # клики по предыдущим экранам конфигурации.
+    await _render_screen(message_or_cb, text, kb, state=state)
 
     await state.set_state(CreateExperiment.configuring)
 
@@ -236,6 +249,24 @@ async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
         "показываться каждому участнику в случайном порядке. "
         "Если выключена — все увидят стимулы в том же порядке, "
         "в каком они идут в CSV-файле.\n\n"
+        "<b>🔀 Рандомизация позиций кнопок</b>\n"
+        "Если включена — на каждой пробе с вариантами ответа "
+        "(«Слово»/«Не слово», «Да»/«Нет» и т.п.) порядок кнопок будет "
+        "случайным. Это важно при измерении времени реакции (RT): "
+        "иначе курсор/палец оказывается ближе к одному из вариантов и "
+        "ответы «не слово» подряд получаются систематически быстрее. "
+        "Не влияет на шкалы Likert и текстовый ввод.\n\n"
+        "<b>🧹 Чистить предыдущие пробы</b>\n"
+        "Если включено (по умолчанию — да) — перед показом следующей "
+        "пробы бот удаляет своё предыдущее сообщение со стимулом и "
+        "инструкции этой пробы. Участник видит только текущий стимул, "
+        "не может сравнить с предыдущими и не получает контекст от уже "
+        "пройденных проб. Если выключено — все стимулы накапливаются "
+        "в чате.\n"
+        "Технические ограничения: ответы участника текстом или "
+        "голосом удалить нельзя (Telegram запрещает боту удалять "
+        "сообщения пользователя в личке), а сообщения старше 48 часов "
+        "тоже не удаляются.\n\n"
         "<b>📋 Распределение по листам</b>\n"
         "«Лист» — это отдельный набор стимулов. Если у вас несколько "
         "вариантов эксперимента (например, лист A и лист B с разными "
@@ -267,15 +298,41 @@ async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
         "<b>📎 Загрузить CSV</b>\n"
         "Файл со стимулами. Формат зависит от выбранного шаблона "
         "(колонки <i>stimulus</i>, <i>class</i>, и т.п.). Если фаз или листов"
-        "несколько — CSV загружается отдельно для каждой фазы и листа."
+        "несколько — CSV загружается отдельно для каждой фазы и листа.\n\n"
+        "<b>📊 Шкала ответа (Likert) — как располагаются кнопки</b>\n"
+        "• Если у всех позиций шкалы подписи — это просто цифры "
+        "(<code>1</code>, <code>2</code>, …, <code>N</code>), кнопки "
+        "встанут в один горизонтальный ряд.\n"
+        "• Если хотя бы у одной позиции есть текстовая подпись "
+        "(например, «Совсем не ожидаемо» на 1), все кнопки автоматически "
+        "выкладываются в вертикальный список. Иначе Telegram обрезает "
+        "длинные подписи на мобильных экранах.\n"
+        "Поэтому если хочется компактную горизонтальную шкалу — "
+        "не задавайте подписи, оставьте только цифры. Если важно "
+        "обозначить полюса словами — будьте готовы к вертикальному виду.\n\n"
+        "<b>🔤 Кнопки ответа и проверка корректности</b>\n"
+        "В подменю «🔤 Кнопки ответа» вы задаёте лейблы (текст) для "
+        "каждой семантической категории шаблона: позиция №1 — первая "
+        "категория, №2 — вторая. Это <b>не порядок показа на экране</b>, "
+        "а сопоставление «лейбл ↔ категория». Тасование физических "
+        "позиций кнопок при показе — отдельная настройка "
+        "(«🔀 Рандомизация позиций кнопок»).\n"
+        "Что важно помнить:\n"
+        "• <b>Не меняйте местами сами лейблы категорий.</b> Если "
+        "поставите «Не слово» на позицию №1, шаблон будет считать "
+        "первой категорией «не-слово», и для CSV со <i>class=word</i> "
+        "правильным ответом станет «Не слово».\n"
+        "• <b>Переименование безопасно</b> — например, «Слово» → «Yes». "
+        "Корректность считается автоматически по тому же лейблу, "
+        "который вы поставили.\n"
+        "• Если шаблон ожидает варианты прямо из CSV "
+        "(<code>opt1..opt6</code> с <code>*</code>), кастомизация кнопок "
+        "не применяется — текст в CSV и есть текст кнопки и ответа."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
     ])
-    try:
-        await callback.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_back")
@@ -298,6 +355,26 @@ async def toggle_randomize(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
     await state.update_data(randomize=not data.get("randomize", False))
+    await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_randomize_buttons")
+async def toggle_randomize_buttons(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    await state.update_data(
+        randomize_button_positions=not data.get("randomize_button_positions", False)
+    )
+    await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_delete_previous")
+async def toggle_delete_previous(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    # дефолт — True; первое нажатие выключает
+    current = data.get("delete_previous_trials", True)
+    await state.update_data(delete_previous_trials=not current)
     await show_config_menu(callback, state)
 
 
@@ -333,10 +410,7 @@ async def show_demographics_menu(callback: types.CallbackQuery, state: FSMContex
         [InlineKeyboardButton(text="📎 Загрузить свою (CSV)", callback_data="demo_upload")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
     ])
-    try:
-        await callback.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "demo_off")
@@ -359,14 +433,16 @@ async def demo_ask_upload(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📄 Показать пример", callback_data="demo_example")],
     ])
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         "Отправьте CSV-файл с вопросами.\n\n"
         "Колонки (разделитель — <code>;</code>):\n"
         "• <b>key</b> — короткий идентификатор (напр. <code>age</code>)\n"
         "• <b>text</b> — сам вопрос\n"
         "• <b>type</b> — <code>open_text</code> или <code>buttons</code>\n"
         "• <b>options</b> — варианты через <code>|</code> (для buttons)",
-        reply_markup=kb,
+        kb,
+        state=state,
     )
     await state.set_state(CreateExperiment.uploading_demographics)
 
@@ -384,17 +460,34 @@ DEMO_EXAMPLE_CSV = (
 
 @router.callback_query(CreateExperiment.uploading_demographics, F.data == "demo_example")
 async def demo_send_example(callback: types.CallbackQuery, state: FSMContext):
-    """отправить пример CSV-опросника"""
+    """отправить пример CSV-опросника.
+
+    следующее действие исследователя — отгрузить свой CSV, поэтому
+    после файла-примера никакого нового меню не шлём: подпись к
+    документу уже содержит инструкцию «скачайте, отредактируйте,
+    пришлите обратно». как только исследователь загрузит CSV, обработчик
+    demo_on_csv_uploaded покажет следующий экран. экран-промпт удаляем —
+    его инструкция продублирована в caption файла.
+    """
     await callback.answer()
     file = BufferedInputFile(
         DEMO_EXAMPLE_CSV.encode("utf-8"),
         filename="demographics_example.csv",
     )
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer_document(
         file,
         caption=(
             "Пример CSV-опросника. Скачайте, отредактируйте под свои "
-            "вопросы и пришлите обратно."
+            "вопросы и пришлите CSV-файл обратно (колонки: "
+            "<code>key;text;type;options</code>; "
+            "<code>type</code> — <code>open_text</code> или "
+            "<code>buttons</code>; варианты для <code>buttons</code> "
+            "через <code>|</code>).\n\n"
+            "/cancel — отмена."
         ),
     )
 
@@ -496,15 +589,36 @@ async def _show_buttons_submenu(callback: types.CallbackQuery, state: FSMContext
     labels = _get_current_buttons(data, tmpl_code)
 
     if not labels:
-        await callback.message.answer("У этого шаблона нет настраиваемых кнопок.")
+        # тоаст поверх текущего меню — экран не меняем
+        await callback.answer(
+            "У этого шаблона нет настраиваемых кнопок.", show_alert=True,
+        )
         return
 
     text = (
         "<b>Кнопки ответа</b>\n\n"
-        "Это метки, которые увидит респондент. Порядок важен — "
-        "он связан с правильными ответами (например, для "
-        "lexical decision первая кнопка соответствует «слову», "
-        "вторая — «не-слову»).\n\n"
+        "Здесь вы задаёте, каким <i>текстом</i> подписана каждая "
+        "семантическая категория шаблона. Кнопка №1 — это всегда "
+        "первая категория (для lexical decision — «слово», для "
+        "judgment-шаблонов — «приемлемо/осмысленно/верно» и т.п.), "
+        "кнопка №2 — вторая категория.\n\n"
+        "Важно: список ниже — это <b>сопоставление лейбла категории</b>, "
+        "а не порядок показа на экране. Если включена «Рандомизация "
+        "позиций кнопок», физическое расположение кнопок участнику "
+        "тасуется на каждой пробе — но связка «лейбл ↔ категория» "
+        "остаётся такой, как задано здесь.\n\n"
+        "ℹ️ <b>Что сохраняется в результаты:</b> текст нажатой кнопки. "
+        "Если переименуете «Слово» в «Yes» — в CSV-экспорте ответы "
+        "будут «Yes». На корректность это не влияет.\n\n"
+        "⚠️ <b>Чего делать не надо:</b> менять местами лейблы категорий "
+        "(например, поставить «Не слово» на позицию №1). Это исказит "
+        "правильные ответы: код шаблона выводит correct_answer как "
+        "«лейбл категории такой-то» — и если первой категорией вдруг "
+        "окажется «не-слово», то на CSV-стимуле с <code>class=word</code> "
+        "правильным ответом будет «Не слово».\n\n"
+        "ℹ️ Если кнопки приходят из CSV (<code>opt1..opt6</code> с маркером "
+        "<code>*</code>), эта настройка не применяется — варианты "
+        "берутся напрямую из файла.\n\n"
         "Текущие значения:\n"
         + "\n".join(f"{i+1}. {lbl}" for i, lbl in enumerate(labels))
     )
@@ -522,10 +636,7 @@ async def _show_buttons_submenu(callback: types.CallbackQuery, state: FSMContext
         text="⬅️ Назад к настройкам", callback_data="cfg_back",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    try:
-        await callback.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 async def _send_buttons_submenu(message: types.Message, state: FSMContext):
@@ -545,7 +656,11 @@ async def _send_buttons_submenu(message: types.Message, state: FSMContext):
     )] for i, lbl in enumerate(labels)]
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="btn_reset")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await _render_screen(
+        message, text,
+        InlineKeyboardMarkup(inline_keyboard=buttons),
+        state=state,
+    )
 
 
 async def _send_likert_submenu(message: types.Message, state: FSMContext):
@@ -575,7 +690,11 @@ async def _send_likert_submenu(message: types.Message, state: FSMContext):
         )])
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="lkt_reset")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await _render_screen(
+        message, text,
+        InlineKeyboardMarkup(inline_keyboard=buttons),
+        state=state,
+    )
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_buttons")
@@ -595,10 +714,12 @@ async def on_button_edit(callback: types.CallbackQuery, state: FSMContext):
     if idx < 0 or idx >= len(labels):
         return
     await state.update_data(waiting_button_edit={"key": "main", "index": idx})
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         f"Введите новую метку для кнопки №{idx + 1} "
         f"(сейчас: «{labels[idx]}»).\n\n"
-        f"Отправьте /cancel чтобы отменить."
+        f"Отправьте /cancel чтобы отменить.",
+        state=state,
     )
 
 
@@ -646,6 +767,12 @@ async def _show_likert_submenu(callback: types.CallbackQuery, state: FSMContext)
         "Respondent увидит набор кнопок с номерами 1..N. "
         "Можно поменять размер шкалы и подписи к любой позиции "
         "(обычно подписывают крайние — «совсем не...» и «очень...»).\n\n"
+        "ℹ️ <b>Как это покажется участнику:</b>\n"
+        "• Если у всех позиций подписи — просто цифры, кнопки будут "
+        "в один горизонтальный ряд.\n"
+        "• Как только у любой позиции появляется текстовая подпись, "
+        "все кнопки переключаются в вертикальный список — иначе "
+        "Telegram режет длинные надписи на узких экранах.\n\n"
         f"Текущий размер: <b>{scale}</b>\n"
         "Подписи:\n"
         + "\n".join(
@@ -670,10 +797,7 @@ async def _show_likert_submenu(callback: types.CallbackQuery, state: FSMContext)
         text="⬅️ Назад к настройкам", callback_data="cfg_back",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    try:
-        await callback.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_likert")
@@ -718,11 +842,13 @@ async def on_likert_label_edit(callback: types.CallbackQuery, state: FSMContext)
     tmpl_code = data.get("template_type", "")
     current = _get_current_likert(data, tmpl_code)
     cur_label = current["labels"].get(str(pos), str(pos))
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         f"Введите новую подпись для позиции {pos} "
         f"(сейчас: «{cur_label}»).\n\n"
         f"Отправьте «-» чтобы убрать подпись (останется просто цифра).\n"
-        f"/cancel — отмена."
+        f"/cancel — отмена.",
+        state=state,
     )
 
 
@@ -793,16 +919,13 @@ def _build_instructions_text_and_kb(data: dict) -> tuple[str, InlineKeyboardMark
 async def _show_instructions_submenu(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     text, kb = _build_instructions_text_and_kb(data)
-    try:
-        await callback.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 async def _send_instructions_submenu(message: types.Message, state: FSMContext):
     data = await state.get_data()
     text, kb = _build_instructions_text_and_kb(data)
-    await message.answer(text, reply_markup=kb)
+    await _render_screen(message, text, kb, state=state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_instructions")
@@ -819,11 +942,13 @@ async def on_instruction_edit(callback: types.CallbackQuery, state: FSMContext):
     tmpl_code = data.get("template_type", "")
     current = _get_current_instruction(data, tmpl_code, phase_idx)
     await state.update_data(waiting_instruction_edit={"phase_index": phase_idx})
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         f"Введите новую инструкцию для фазы {phase_idx + 1}.\n\n"
         f"<b>Сейчас:</b>\n{current}\n\n"
         f"Отправьте «-» чтобы сбросить к дефолту шаблона.\n"
-        f"/cancel — отмена."
+        f"/cancel — отмена.",
+        state=state,
     )
 
 
@@ -843,20 +968,25 @@ async def on_cfg_description(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     current = data.get("description", "") or "<i>(пусто)</i>"
     await state.update_data(waiting_description_edit=True)
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         "Введите <b>приветственное сообщение</b>. Его увидит респондент, "
         "когда перейдёт по ссылке на эксперимент — до инструкций и "
         "стимулов.\n\n"
         f"<b>Сейчас:</b>\n{current}\n\n"
-        "/cancel — отмена."
+        "/cancel — отмена.",
+        state=state,
     )
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_timeout")
 async def ask_timeout(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.answer(
-        "Введите тайм-аут в секундах (0 — отключить):"
+    await _render_screen(
+        callback,
+        "Введите тайм-аут в секундах (0 — отключить).\n\n"
+        "/cancel — отмена.",
+        state=state,
     )
     await state.set_state(CreateExperiment.configuring)
     await state.update_data(waiting_timeout=True)
@@ -923,7 +1053,7 @@ async def on_config_text(message: types.Message, state: FSMContext):
             if len(text) > 3000:
                 await message.answer("Слишком длинная инструкция (> 3000 символов).")
                 return
-            custom[phase_idx] = text
+            custom[str(phase_idx)] = text
             await message.answer(f"✅ Инструкция фазы {phase_idx + 1} обновлена.")
         await state.update_data(
             custom_instructions=custom, waiting_instruction_edit=None,
@@ -1005,7 +1135,7 @@ async def ask_csv(callback: types.CallbackQuery, state: FSMContext):
         else:
             prompt = "Отправьте CSV-файл со стимулами."
 
-    await callback.message.answer(prompt)
+    await _render_screen(callback, prompt + "\n\n/cancel — отмена.", state=state)
     await state.set_state(CreateExperiment.uploading_csv)
 
 
@@ -1147,8 +1277,10 @@ async def on_next_list(callback: types.CallbackQuery, state: FSMContext):
     phase_name = phases_info[current_phase_num - 1] if current_phase_num <= len(phases_info) else f"Фаза {current_phase_num}"
 
     await state.update_data(current_list=next_list)
-    await callback.message.answer(
-        f"Отправьте CSV для фазы {current_phase_num} ({phase_name}), лист {next_list}."
+    await _render_screen(
+        callback,
+        f"Отправьте CSV для фазы {current_phase_num} ({phase_name}), лист {next_list}.",
+        state=state,
     )
 
 
@@ -1163,12 +1295,16 @@ async def on_next_phase(callback: types.CallbackQuery, state: FSMContext):
 
     await state.update_data(current_phase_num=next_phase, current_list="1")
     if use_lists:
-        await callback.message.answer(
-            f"Отправьте CSV для фазы {next_phase} ({phase_name}), лист 1."
+        await _render_screen(
+            callback,
+            f"Отправьте CSV для фазы {next_phase} ({phase_name}), лист 1.",
+            state=state,
         )
     else:
-        await callback.message.answer(
-            f"Отправьте CSV для фазы {next_phase} ({phase_name})."
+        await _render_screen(
+            callback,
+            f"Отправьте CSV для фазы {next_phase} ({phase_name}).",
+            state=state,
         )
 
 
@@ -1272,6 +1408,8 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "template_type": template_type,
         "phases": phases,
         "randomize_trials": data.get("randomize", False),
+        "randomize_button_positions": data.get("randomize_button_positions", False),
+        "delete_previous_trials": data.get("delete_previous_trials", True),
         "use_lists": data.get("use_lists", False),
         "lists_count": lists_count,
         "time_limit": data.get("time_limit"),
@@ -1290,8 +1428,10 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         exp_id = editing_id
         logger.info("эксперимент %s обновлён пользователем %s", exp_id, callback.from_user.id)
         await state.clear()
-        await callback.message.answer("✅ Изменения сохранены.")
-        await show_experiment_detail(callback.message, exp_id)
+        await show_experiment_detail(
+            callback, exp_id, banner="✅ Изменения сохранены.",
+            state=state,
+        )
         return
 
     # create — новый эксперимент
@@ -1309,27 +1449,39 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
 
     logger.info("эксперимент %s создан пользователем %s", exp_id, callback.from_user.id)
 
-    await callback.message.answer(
-        f"Эксперимент «{data.get('title')}» сохранен как черновик.\n"
-        f"ID: {exp_id}"
+    await show_experiment_detail(
+        callback, exp_id,
+        banner=f"✅ «{data.get('title')}» сохранён как черновик.",
+        state=state,
     )
-    await show_experiment_detail(callback.message, exp_id)
 
 
 # ── детали эксперимента ──
 
-async def show_experiment_detail(message, experiment_id: str):
-    """показать карточку эксперимента с действиями"""
+async def show_experiment_detail(
+    target, experiment_id: str, banner: str = "",
+    state: FSMContext | None = None,
+):
+    """показать карточку эксперимента с действиями.
+
+    target — CallbackQuery или Message.
+    banner — необязательная строка-уведомление в начале экрана
+    (например, «✅ Изменения сохранены»), сворачивает короткую
+    подтверждающую реплику в этот же экран.
+    state — FSMContext для обновления active_menu_msg_id (StaleMenuGuard).
+    """
     exp = await repo.get_experiment(experiment_id)
     if not exp:
-        await message.answer("Эксперимент не найден.")
+        await _render_screen(target, "Эксперимент не найден.", state=state)
         return
 
     status_text = {"draft": "Черновик", "active": "Активен", "archived": "Архив"}
     phases_count = len(exp.get("phases", []))
     trials_count = sum(len(p.get("trials", [])) for p in exp.get("phases", []))
 
+    head = f"{banner}\n\n" if banner else ""
     text = (
+        f"{head}"
         f"<b>{exp['title']}</b>\n\n"
         f"Статус: {status_text.get(exp['status'], exp['status'])}\n"
         f"Шаблон: {exp['template_type']}\n"
@@ -1337,8 +1489,14 @@ async def show_experiment_detail(message, experiment_id: str):
     )
 
     if exp["status"] == "active":
-        bot_info_text = f"\nСсылка: https://t.me/YOUR_BOT?start={exp['deep_link_id']}"
-        text += bot_info_text
+        # имя бота берём из target.bot — оба CallbackQuery и Message
+        # имеют атрибут .bot, который инжектится aiogram-ом.
+        try:
+            bot_me = await target.bot.get_me()
+            link = f"https://t.me/{bot_me.username}?start={exp['deep_link_id']}"
+        except Exception:
+            link = f"(deep_link_id: {exp['deep_link_id']})"
+        text += f"\nСсылка для участников: {link}"
 
     buttons = []
     if exp["status"] == "draft":
@@ -1380,19 +1538,23 @@ async def show_experiment_detail(message, experiment_id: str):
         callback_data=f"export_{experiment_id}",
     )])
     buttons.append([InlineKeyboardButton(
+        text="🗑 Удалить",
+        callback_data=f"del_ask_{experiment_id}",
+    )])
+    buttons.append([InlineKeyboardButton(
         text="← Назад",
         callback_data="my_experiments",
     )])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer(text, reply_markup=kb)
+    await _render_screen(target, text, kb, state=state)
 
 
 @router.callback_query(F.data.startswith("exp_detail_"))
-async def on_experiment_detail(callback: types.CallbackQuery):
+async def on_experiment_detail(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     exp_id = callback.data.replace("exp_detail_", "")
-    await show_experiment_detail(callback.message, exp_id)
+    await show_experiment_detail(callback, exp_id, state=state)
 
 
 # ── редактирование черновика ──
@@ -1448,6 +1610,8 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
         description=exp.get("description", ""),
         template_type=exp.get("template_type", ""),
         randomize=exp.get("randomize_trials", False),
+        randomize_button_positions=exp.get("randomize_button_positions", False),
+        delete_previous_trials=exp.get("delete_previous_trials", True),
         use_lists=exp.get("use_lists", False),
         demographics_mode=demo_mode,
         demographics_custom=exp.get("demographics_custom", []),
@@ -1474,6 +1638,14 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
 async def on_upload_media(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     exp_id = callback.data.replace("upload_media_", "")
+    # глушим карточку эксперимента: дальше идёт загрузка медиа в своём
+    # роутере; кнопки на карточке после старта аплода больше не должны
+    # ничего делать (можно случайно нажать, например, «деактивировать»).
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning("не удалось снять кнопки с карточки media-upload: %s", e)
+    await state.update_data(active_menu_msg_id=None)
     from handlers.media_upload import start_media_upload
     await start_media_upload(callback.message, exp_id, state)
 
@@ -1481,7 +1653,7 @@ async def on_upload_media(callback: types.CallbackQuery, state: FSMContext):
 # ── активация / деактивация ──
 
 @router.callback_query(F.data.startswith("act_ask_"))
-async def on_activate_ask(callback: types.CallbackQuery):
+async def on_activate_ask(callback: types.CallbackQuery, state: FSMContext):
     """шаг 1: спросить подтверждение и заранее прогнать валидацию"""
     await callback.answer()
     exp_id = callback.data.replace("act_ask_", "")
@@ -1489,7 +1661,7 @@ async def on_activate_ask(callback: types.CallbackQuery):
     from utils.validators import validate_experiment
     exp = await repo.get_experiment(exp_id)
     if not exp:
-        await callback.message.answer("Эксперимент не найден.")
+        await _render_screen(callback, "Эксперимент не найден.", state=state)
         return
 
     errors = validate_experiment(exp)
@@ -1504,12 +1676,14 @@ async def on_activate_ask(callback: types.CallbackQuery):
                 callback_data=f"exp_detail_{exp_id}",
             )],
         ])
-        await callback.message.answer(
+        await _render_screen(
+            callback,
             "❌ <b>Эксперимент нельзя активировать.</b>\n\n"
             "Найдены проблемы:\n"
             + "\n".join(f"• {e}" for e in errors)
             + "\n\nИсправьте их и попробуйте снова.",
-            reply_markup=kb,
+            kb,
+            state=state,
         )
         return
 
@@ -1523,7 +1697,8 @@ async def on_activate_ask(callback: types.CallbackQuery):
             callback_data=f"exp_detail_{exp_id}",
         )],
     ])
-    await callback.message.answer(
+    await _render_screen(
+        callback,
         "⚠️ <b>После активации нельзя изменить черновик.</b>\n\n"
         "Как только эксперимент станет активным, структура фаз, стимулы, "
         "настройки и анкета будут зафиксированы. Это нужно для чистоты "
@@ -1532,12 +1707,13 @@ async def on_activate_ask(callback: types.CallbackQuery):
         "деактивировать обратно в черновик, но это сбросит часть данных "
         "сбора. Лучше проверить всё сейчас.\n\n"
         "Вы уверены?",
-        reply_markup=kb,
+        kb,
+        state=state,
     )
 
 
 @router.callback_query(F.data.startswith("act_do_"))
-async def on_activate_do(callback: types.CallbackQuery, bot: Bot):
+async def on_activate_do(callback: types.CallbackQuery, bot: Bot, state: FSMContext):
     """шаг 2: реально активируем"""
     await callback.answer()
     exp_id = callback.data.replace("act_do_", "")
@@ -1546,48 +1722,196 @@ async def on_activate_do(callback: types.CallbackQuery, bot: Bot):
     from utils.validators import validate_experiment
     exp = await repo.get_experiment(exp_id)
     if not exp:
-        await callback.message.answer("Эксперимент не найден.")
+        await _render_screen(callback, "Эксперимент не найден.", state=state)
         return
     errors = validate_experiment(exp)
     if errors:
-        await callback.message.answer(
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="✏️ К редактированию",
+                callback_data=f"edit_draft_{exp_id}",
+            )],
+            [InlineKeyboardButton(
+                text="← К эксперименту",
+                callback_data=f"exp_detail_{exp_id}",
+            )],
+        ])
+        await _render_screen(
+            callback,
             "❌ Не удалось активировать. Проблемы:\n"
-            + "\n".join(f"• {e}" for e in errors)
+            + "\n".join(f"• {e}" for e in errors),
+            kb,
+            state=state,
         )
         return
 
     await repo.update_experiment(exp_id, {"status": "active"})
-    exp = await repo.get_experiment(exp_id)
-
-    bot_me = await bot.get_me()
-    link = f"https://t.me/{bot_me.username}?start={exp['deep_link_id']}"
-
-    await callback.message.answer(
-        f"Эксперимент активирован!\n\nСсылка для респондентов:\n{link}"
+    # ссылка отрисуется внутри show_experiment_detail (статус active)
+    await show_experiment_detail(
+        callback, exp_id,
+        banner="🟢 Эксперимент активирован. Ссылка для участников — ниже.",
+        state=state,
     )
-    await show_experiment_detail(callback.message, exp_id)
 
 
 @router.callback_query(F.data.startswith("deactivate_"))
-async def on_deactivate(callback: types.CallbackQuery):
+async def on_deactivate(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     exp_id = callback.data.replace("deactivate_", "")
     await repo.update_experiment(exp_id, {"status": "draft"})
-    await callback.message.answer("Эксперимент деактивирован.")
-    await show_experiment_detail(callback.message, exp_id)
+    await show_experiment_detail(
+        callback, exp_id, banner="⏸ Эксперимент деактивирован.",
+        state=state,
+    )
+
+
+# ── удаление эксперимента ──
+
+@router.callback_query(F.data.startswith("del_ask_"))
+async def on_delete_ask(callback: types.CallbackQuery, state: FSMContext):
+    """шаг 1: подтверждение удаления"""
+    await callback.answer()
+    exp_id = callback.data.replace("del_ask_", "")
+    exp = await repo.get_experiment(exp_id)
+    if not exp:
+        await _render_screen(callback, "Эксперимент не найден.", state=state)
+        return
+
+    sessions = await repo.get_sessions_by_experiment(exp_id)
+    real_sessions = [s for s in sessions if not s.get("is_preview", False)]
+    n_sessions = len(real_sessions)
+    answers = await repo.get_answers_by_experiment(exp_id)
+    n_answers = len(answers)
+
+    status_text = {"draft": "Черновик", "active": "Активен", "archived": "Архив"}
+    info = (
+        f"⚠️ <b>Удалить эксперимент?</b>\n\n"
+        f"«{exp['title']}»\n"
+        f"Статус: {status_text.get(exp['status'], exp['status'])}\n"
+        f"Сессий участников: {n_sessions}\n"
+        f"Записей ответов: {n_answers}\n\n"
+        f"Перед удалением бот пришлёт CSV с результатами "
+        f"(если есть данные). После удаления ссылка перестанет работать "
+        f"и все ответы будут стёрты безвозвратно.\n\n"
+        f"Точно удалить?"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🗑 Да, удалить",
+            callback_data=f"del_do_{exp_id}",
+        )],
+        [InlineKeyboardButton(
+            text="← Отмена",
+            callback_data=f"exp_detail_{exp_id}",
+        )],
+    ])
+    await _render_screen(callback, info, kb, state=state)
+
+
+@router.callback_query(F.data.startswith("del_do_"))
+async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
+    """шаг 2: выгрузить CSV (если есть данные) и удалить эксперимент."""
+    await callback.answer()
+    exp_id = callback.data.replace("del_do_", "")
+    exp = await repo.get_experiment(exp_id)
+    if not exp:
+        await _render_screen(callback, "Эксперимент не найден.", state=state)
+        return
+
+    title = exp.get("title", "experiment")
+
+    # сначала пробуем выгрузить CSV — если упадёт, не удаляем данные
+    try:
+        csv_text = await export_util.export_experiment_csv(exp_id)
+    except Exception:
+        logger.exception("ошибка экспорта CSV перед удалением %s", exp_id)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="← К эксперименту",
+                callback_data=f"exp_detail_{exp_id}",
+            )],
+        ])
+        await _render_screen(
+            callback,
+            "❌ Не удалось сгенерировать CSV. Удаление отменено, "
+            "чтобы не потерять данные. Попробуйте ещё раз позже.",
+            kb,
+            state=state,
+        )
+        return
+
+    # удаляем сообщение-подтверждение, чтобы итоговое меню оказалось
+    # ниже CSV-файла, а не над ним. (отредактировать его «на месте»
+    # нельзя — оно осталось бы выше документа в ленте чата.)
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    csv_note = ""
+    if csv_text and csv_text.strip():
+        file = BufferedInputFile(
+            csv_text.encode("utf-8-sig"),
+            filename=f"results_{exp_id}.csv",
+        )
+        await callback.message.answer_document(
+            file,
+            caption=f"Результаты «{title}» перед удалением.",
+        )
+        csv_note = "📥 CSV с результатами — выше отдельным файлом.\n\n"
+    else:
+        csv_note = "ℹ️ Данных для экспорта не было — CSV не прислан.\n\n"
+
+    # каскадное удаление
+    counts = await repo.delete_experiment_cascade(exp_id)
+
+    logger.info(
+        "пользователь %s удалил эксперимент %s (%s)",
+        callback.from_user.id, exp_id, title,
+    )
+
+    # итоговый экран — новым сообщением, чтобы он оказался под CSV.
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← К списку", callback_data="my_experiments")],
+        [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
+    ])
+    sent = await callback.message.answer(
+        f"🗑 Эксперимент «{title}» удалён.\n"
+        f"Стёрто: сессий {counts['sessions']}, "
+        f"ответов {counts['answers']}, "
+        f"медиа {counts['media']}.\n\n"
+        + csv_note,
+        reply_markup=kb,
+    )
+    # фиксируем как активный экран, чтобы StaleMenuGuard знал, что
+    # старая (удалённая) карточка эксперимента более неактивна.
+    await state.update_data(active_menu_msg_id=sent.message_id)
 
 
 # ── превью ──
 
 @router.callback_query(F.data.startswith("preview_"))
-async def on_preview(callback: types.CallbackQuery, bot: Bot):
+async def on_preview(callback: types.CallbackQuery, bot: Bot, state: FSMContext):
     """исследователь проходит эксперимент как участник (preview mode)"""
     await callback.answer()
     exp_id = callback.data.replace("preview_", "")
     experiment = await repo.get_experiment(exp_id)
     if not experiment:
-        await callback.message.answer("Эксперимент не найден.")
+        await _render_screen(callback, "Эксперимент не найден.", state=state)
         return
+
+    # глушим карточку эксперимента: после старта превью её кнопки
+    # не должны срабатывать — пользователь работает в новом контексте
+    # (превью), и клик по «деактивировать» из старой карточки сбил бы
+    # эксперимент в неожиданный момент.
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning("не удалось снять кнопки с карточки превью: %s", e)
+    # сбрасываем active_menu_msg_id: превью идёт через participant-флоу,
+    # и StaleMenuGuard будет пропускать всё, пока не появится новое
+    # researcher-меню (главное меню после завершения превью).
+    await state.update_data(active_menu_msg_id=None)
 
     session_data = {
         "telegram_id": callback.from_user.id,
@@ -1608,8 +1932,12 @@ async def on_preview(callback: types.CallbackQuery, bot: Bot):
 
     # подготавливаем пробы
     phases = experiment.get("phases", [])
+    randomize_buttons = experiment.get("randomize_button_positions", False)
     for i, phase in enumerate(phases):
-        prepared = runner.prepare_trials_for_session(phase, "1")
+        prepared = runner.prepare_trials_for_session(
+            phase, "1",
+            randomize_button_positions=randomize_buttons,
+        )
         phases[i]["trials"] = prepared
     await repo.update_session(session_id, {"prepared_phases": phases})
     session = await repo.get_session(session_id)
@@ -1626,8 +1954,8 @@ async def on_preview(callback: types.CallbackQuery, bot: Bot):
 
 # ── результаты ──
 
-@router.callback_query(F.data.startswith("results_"))
-async def on_results(callback: types.CallbackQuery):
+@router.callback_query(F.data.startswith("results_") & (F.data != "results_menu"))
+async def on_results(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     exp_id = callback.data.replace("results_", "")
     sessions = await repo.get_sessions_by_experiment(exp_id)
@@ -1660,37 +1988,53 @@ async def on_results(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📥 Экспорт CSV", callback_data=f"export_{exp_id}")],
         [InlineKeyboardButton(text="← Назад", callback_data=f"exp_detail_{exp_id}")],
     ])
-    await callback.message.answer(text, reply_markup=kb)
+    await _render_screen(callback, text, kb, state=state)
 
 
 # ── экспорт CSV ──
 
 @router.callback_query(F.data.startswith("export_"))
-async def on_export(callback: types.CallbackQuery):
-    await callback.answer()
+async def on_export(callback: types.CallbackQuery, state: FSMContext):
     exp_id = callback.data.replace("export_", "")
 
     csv_text = await export_util.export_experiment_csv(exp_id)
     if not csv_text.strip():
-        await callback.message.answer("Нет данных для экспорта.")
+        # экран не меняем — показываем тоаст-уведомление поверх кнопки
+        await callback.answer("Нет данных для экспорта.", show_alert=True)
         return
 
+    await callback.answer()
     file = BufferedInputFile(
         csv_text.encode("utf-8-sig"),
         filename=f"results_{exp_id}.csv",
     )
+    # удаляем текущий экран (карточку или экран результатов), чтобы CSV
+    # оказался выше итогового меню. иначе документ висит снизу, а
+    # активное меню — сверху, неудобно.
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer_document(file, caption="Результаты эксперимента")
+    # перерисовываем карточку эксперимента новым сообщением — она
+    # окажется ниже файла. возвращаемся именно в карточку: это самый
+    # частый «домашний» экран после экспорта. show_experiment_detail
+    # обновит active_menu_msg_id через переданный state.
+    await show_experiment_detail(callback.message, exp_id, state=state)
 
 
 # ── список экспериментов ──
 
 @router.callback_query(F.data == "my_experiments")
-async def on_my_experiments(callback: types.CallbackQuery):
+async def on_my_experiments(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     experiments = await repo.get_experiments_by_owner(callback.from_user.id)
 
     if not experiments:
-        await callback.message.answer("У вас пока нет экспериментов.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
+        ])
+        await _render_screen(callback, "У вас пока нет экспериментов.", kb, state=state)
         return
 
     buttons = []
@@ -1703,17 +2047,20 @@ async def on_my_experiments(callback: types.CallbackQuery):
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="back_to_menu")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.answer("Ваши эксперименты:", reply_markup=kb)
+    await _render_screen(callback, "Ваши эксперименты:", kb, state=state)
 
 
 @router.callback_query(F.data == "results_menu")
-async def on_results_menu(callback: types.CallbackQuery):
+async def on_results_menu(callback: types.CallbackQuery, state: FSMContext):
     """показать список экспериментов для просмотра результатов"""
     await callback.answer()
     experiments = await repo.get_experiments_by_owner(callback.from_user.id)
 
     if not experiments:
-        await callback.message.answer("У вас пока нет экспериментов.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
+        ])
+        await _render_screen(callback, "У вас пока нет экспериментов.", kb, state=state)
         return
 
     buttons = []
@@ -1724,7 +2071,7 @@ async def on_results_menu(callback: types.CallbackQuery):
         )])
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="back_to_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.answer("Выберите эксперимент:", reply_markup=kb)
+    await _render_screen(callback, "Выберите эксперимент:", kb, state=state)
 
 
 @router.callback_query(F.data == "back_to_menu")
@@ -1735,8 +2082,9 @@ async def on_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="Создать эксперимент", callback_data="create_experiment")],
         [InlineKeyboardButton(text="Мои эксперименты", callback_data="my_experiments")],
         [InlineKeyboardButton(text="Результаты", callback_data="results_menu")],
+        [InlineKeyboardButton(text="Рассылка участникам", callback_data="promo_menu")],
     ])
-    await callback.message.answer("Главное меню:", reply_markup=kb)
+    await _render_screen(callback, "Главное меню:", kb, state=state)
 
 
 # ── вспомогательные ──

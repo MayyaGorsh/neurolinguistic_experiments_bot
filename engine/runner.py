@@ -34,11 +34,37 @@ _stimulus_shown_at: dict[str, float] = {}
 
 # ── показ стимула ──
 
+async def _delete_transient(bot: Bot, chat_id: int, message_ids: list):
+    """удалить ранее отправленные ботом сообщения (стимул/инструкция/тайм-аут).
+
+    ошибки игнорируем — сообщение может быть уже удалено вручную или старше
+    48 часов (Telegram запрещает удалять такие). это не должно прерывать
+    показ следующей пробы.
+    """
+    for mid in message_ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
 async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict):
     """показать текущую пробу респонденту"""
     phase_idx = session["current_phase"]
     trial_idx = session["current_trial"]
     phases = experiment["phases"]
+    session_id = str(session["_id"])
+
+    # если включён режим «чистить предыдущие пробы» — стираем сообщения
+    # бота от предыдущей пробы/инструкции/тайм-аута перед показом новой.
+    # дефолт True: эксперимент по умолчанию ведёт себя как «чистый»,
+    # участник видит только текущий стимул.
+    delete_previous = experiment.get("delete_previous_trials", True)
+    if delete_previous:
+        prev_ids = session.get("transient_message_ids", []) or []
+        if prev_ids:
+            await _delete_transient(bot, chat_id, prev_ids)
+            await repo.update_session(session_id, {"transient_message_ids": []})
 
     if phase_idx >= len(phases):
         await finish_experiment(bot, chat_id, session)
@@ -61,24 +87,43 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
         and phase.get("instruction")
         and phase_idx not in shown_instructions
     ):
+        # callback_data включает phase_idx — чтобы клик по инструкции
+        # старой фазы (например, скролл вверх) можно было отличить от
+        # текущей и проигнорировать как stale.
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="Далее",
-                callback_data=f"instr_ok_{session['_id']}",
+                callback_data=f"instr_ok_{session['_id']}_{phase_idx}",
             )]
         ])
-        await bot.send_message(chat_id, phase["instruction"], reply_markup=kb)
+        instr_msg = await bot.send_message(
+            chat_id, phase["instruction"], reply_markup=kb
+        )
+        # запоминаем id, чтобы удалить инструкцию вместе с следующим
+        # переходом, если включён режим очистки.
+        if delete_previous:
+            await repo.update_session(session_id, {
+                "transient_message_ids": [instr_msg.message_id],
+            })
+        # для превью эксперимента: каждое сообщение с кнопками,
+        # которое мы шлём, становится «активным меню» для researcher-FSM.
+        # это блокирует клики по любым более ранним меню исследователя
+        # (карточки, списки и т.п.), которые остались в чате.
+        if session.get("is_preview"):
+            from utils.fsm_bridge import update_active_menu
+            await update_active_menu(
+                bot.id, chat_id, chat_id, instr_msg.message_id,
+            )
         return
 
     trial = trials[trial_idx]
-    session_id = str(session["_id"])
 
     # отправляем стимул в зависимости от типа
     stimulus_type = phase.get("stimulus_type", trial.get("stimulus_type", "text"))
     response_type = phase.get("response_type", "buttons")
 
     # собираем клавиатуру ответов
-    keyboard = build_response_keyboard(trial, phase, session_id, trial_idx)
+    keyboard = build_response_keyboard(trial, phase, session_id, phase_idx, trial_idx)
 
     if stimulus_type == "text":
         msg = await bot.send_message(
@@ -118,11 +163,27 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     _stimulus_shown_at[session_id] = time.time()
 
     # обновляем статус сессии
-    await repo.update_session(session_id, {
+    update_fields = {
         "status": "in_progress",
         "current_phase": phase_idx,
         "current_trial": trial_idx,
-    })
+    }
+    if delete_previous:
+        update_fields["transient_message_ids"] = [msg.message_id]
+    await repo.update_session(session_id, update_fields)
+
+    # для превью: помечаем стимул как «активное меню исследователя».
+    # любые клики по более старым researcher-меню (на которые исследователь
+    # мог бы случайно попасть, прокрутив чат вверх во время превью)
+    # будут заблокированы StaleMenuGuard.
+    # для реальных участников делать это не нужно: StaleMenuGuard на
+    # participant-роутере не висит, а свои клики (ans_*) валидируются
+    # отдельно по phase/trial из callback_data.
+    if session.get("is_preview") and keyboard is not None:
+        from utils.fsm_bridge import update_active_menu
+        await update_active_menu(
+            bot.id, chat_id, chat_id, msg.message_id,
+        )
 
     # запускаем тайм-аут, если задан
     time_limit = phase.get("time_limit") or experiment.get("time_limit")
@@ -134,10 +195,66 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
         _timeout_tasks[session_id] = task
 
 
+# длина одной метки, сверх которой кнопка занимает свой ряд целиком
+# (при бо́льшей длине рядом с ней не помещается соседняя без переноса).
+_BUTTON_LABEL_MAX_INLINE = 25
+
+
+def _layout_button_rows(items: list) -> list:
+    """разложить кнопки по рядам единообразно.
+
+    цель — чтобы в коротких пробах (например, lexical decision со словом
+    из 4 букв) кнопки тоже располагались рядом, а не друг под другом.
+    инлайн-клавиатура задаёт минимальную ширину сообщения, поэтому
+    «бабл» получается одинаково широким независимо от длины стимула.
+
+    схема:
+      1–3 кнопки → один ряд;
+      4 → 2+2;
+      5 → 3+2;
+      6 → 3+3;
+      7+ → ряды по 3 (последний может быть короче).
+    """
+    n = len(items)
+    if n == 0:
+        return []
+    if n <= 3:
+        return [items]
+    if n == 4:
+        return [items[:2], items[2:]]
+    if n == 5:
+        return [items[:3], items[3:]]
+    if n == 6:
+        return [items[:3], items[3:]]
+    return [items[i:i + 3] for i in range(0, n, 3)]
+
+
+def _layout_buttons(options: list, callback_prefix: str) -> list:
+    """собрать ряды InlineKeyboardButton по эвристике layout-а."""
+    keys = [
+        InlineKeyboardButton(
+            text=opt, callback_data=f"{callback_prefix}_{i}",
+        )
+        for i, opt in enumerate(options)
+    ]
+    # если хотя бы одна метка длинная — все кнопки в свои ряды,
+    # иначе текст в кнопке начнёт переноситься и выглядеть некрасиво.
+    max_len = max((len(opt) for opt in options), default=0)
+    if max_len > _BUTTON_LABEL_MAX_INLINE:
+        return [[k] for k in keys]
+    return _layout_button_rows(keys)
+
+
 def build_response_keyboard(
-    trial: dict, phase: dict, session_id: str, trial_idx: int
+    trial: dict, phase: dict, session_id: str,
+    phase_idx: int, trial_idx: int,
 ) -> Optional[InlineKeyboardMarkup]:
-    """собрать клавиатуру в зависимости от типа ответа"""
+    """собрать клавиатуру в зависимости от типа ответа.
+
+    callback_data формата ans_{session_id}_{phase_idx}_{trial_idx}_{option}
+    позволяет хендлеру отличить клик по актуальной пробе от клика по
+    стимулу прошлой фазы или прошлой пробы (после прокрутки чата вверх).
+    """
     response_type = phase.get("response_type", "buttons")
 
     if response_type in ("open_text", "voice"):
@@ -145,43 +262,45 @@ def build_response_keyboard(
         return None
 
     options = trial.get("response_options", [])
+    prefix = f"ans_{session_id}_{phase_idx}_{trial_idx}"
 
     if response_type == "buttons" and options:
-        buttons = []
-        for i, opt in enumerate(options):
-            buttons.append([InlineKeyboardButton(
-                text=opt,
-                callback_data=f"ans_{session_id}_{trial_idx}_{i}",
-            )])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
+        rows = _layout_buttons(options, prefix)
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     if response_type == "likert":
-        # шкала ликерта — кнопки в один ряд
+        # шкала ликерта.
+        # если у всех позиций подписи — просто цифры → горизонтальная шкала.
+        # если хоть у одной позиции есть текстовая подпись (например,
+        # «Совсем не ожидаемо») → каждая позиция в своём ряду, иначе
+        # длинные подписи режутся (Telegram укорачивает текст в кнопке).
         scale = phase.get("settings", {}).get("likert_scale", 5)
         labels = phase.get("settings", {}).get("likert_labels", {})
-        buttons = []
+        items = []
+        any_text_label = False
         for i in range(1, scale + 1):
             label = labels.get(str(i), str(i))
-            buttons.append(InlineKeyboardButton(
+            if label != str(i):
+                any_text_label = True
+            items.append(InlineKeyboardButton(
                 text=label,
-                callback_data=f"ans_{session_id}_{trial_idx}_{i}",
+                callback_data=f"{prefix}_{i}",
             ))
-        return InlineKeyboardMarkup(inline_keyboard=[buttons])
+        if any_text_label:
+            rows = [[btn] for btn in items]
+        else:
+            rows = [items]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     if response_type == "multiple_choice" and options:
-        buttons = []
-        for i, opt in enumerate(options):
-            buttons.append([InlineKeyboardButton(
-                text=opt,
-                callback_data=f"ans_{session_id}_{trial_idx}_{i}",
-            )])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
+        rows = _layout_buttons(options, prefix)
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     # если ничего не подходит — кнопка «Далее»
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text="Далее",
-            callback_data=f"ans_{session_id}_{trial_idx}_next",
+            callback_data=f"{prefix}_next",
         )]
     ])
 
@@ -227,6 +346,13 @@ async def process_answer(
             is_correct = normalized == str(correct_answer).strip().lower()
 
     # сохраняем ответ
+    # для buttons option_index — это позиция нажатой кнопки, которая
+    # после рандомизации ничего не значит и может ввести в заблуждение
+    # при анализе. сохраняем только текст нажатой кнопки (raw_response).
+    metadata = {"list_id": session.get("assigned_list")}
+    if response_type == "likert":
+        # для likert числовое значение = сам ответ, raw_response уже строкa
+        metadata["option_index"] = option_index
     answer_data = {
         "session_id": session_id,
         "experiment_id": session["experiment_id"],
@@ -239,10 +365,7 @@ async def process_answer(
         "reaction_time_ms": rt_ms,
         "timed_out": False,
         "timestamp": datetime.utcnow(),
-        "metadata": {
-            "list_id": session.get("assigned_list"),
-            "option_index": option_index,
-        },
+        "metadata": metadata,
     }
     await repo.save_answer(answer_data)
 
@@ -288,11 +411,20 @@ async def handle_timeout(
     }
     await repo.save_answer(answer_data)
 
-    await bot.send_message(chat_id, "Время вышло.")
+    timeout_msg = await bot.send_message(chat_id, "Время вышло.")
 
-    # обновляем сессию и идем дальше
+    # обновляем сессию и идем дальше; если включена очистка — добавляем
+    # «Время вышло» к списку transient, чтобы следующий present_trial
+    # удалил и стимул, и это уведомление.
     fresh_session = await repo.get_session(session_id)
     if fresh_session:
+        if experiment.get("delete_previous_trials", True):
+            ids = list(fresh_session.get("transient_message_ids") or [])
+            ids.append(timeout_msg.message_id)
+            await repo.update_session(session_id, {
+                "transient_message_ids": ids,
+            })
+            fresh_session = await repo.get_session(session_id)
         await advance_trial(bot, chat_id, fresh_session, experiment)
 
 
@@ -322,19 +454,21 @@ async def advance_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
 
 
 async def advance_phase(bot: Bot, chat_id: int, session: dict, experiment: dict):
-    """перейти к следующей фазе"""
+    """перейти к следующей фазе.
+
+    проксируем через present_trial: даже если все фазы кончились,
+    present_trial поймает phase_idx >= len(phases) и вызовет
+    finish_experiment, успев перед этим удалить предыдущие сообщения
+    (если включена опция «чистить предыдущие пробы»).
+    """
     session_id = str(session["_id"])
     next_phase = session["current_phase"] + 1
-
-    if next_phase >= len(experiment["phases"]):
-        await finish_experiment(bot, chat_id, session)
-    else:
-        await repo.update_session(session_id, {
-            "current_phase": next_phase,
-            "current_trial": 0,
-        })
-        updated = await repo.get_session(session_id)
-        await present_trial(bot, chat_id, updated, experiment)
+    await repo.update_session(session_id, {
+        "current_phase": next_phase,
+        "current_trial": 0,
+    })
+    updated = await repo.get_session(session_id)
+    await present_trial(bot, chat_id, updated, experiment)
 
 
 async def finish_experiment(bot: Bot, chat_id: int, session: dict):
@@ -348,10 +482,33 @@ async def finish_experiment(bot: Bot, chat_id: int, session: dict):
         "finished_at": datetime.utcnow(),
     })
     logger.info("сессия %s завершена", session_id)
-    await bot.send_message(
-        chat_id,
-        "Эксперимент завершен. Спасибо за участие!"
-    )
+
+    if session.get("is_preview"):
+        await bot.send_message(
+            chat_id,
+            "✅ Превью завершено. Это был просмотр эксперимента в роли участника — "
+            "ответы не сохраняются в результатах."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Создать эксперимент", callback_data="create_experiment")],
+            [InlineKeyboardButton(text="Мои эксперименты", callback_data="my_experiments")],
+            [InlineKeyboardButton(text="Результаты", callback_data="results_menu")],
+            [InlineKeyboardButton(text="Рассылка участникам", callback_data="promo_menu")],
+        ])
+        menu_msg = await bot.send_message(chat_id, "Главное меню:", reply_markup=kb)
+        # фиксируем это меню как «текущий активный экран» в FSM —
+        # без этого StaleMenuGuard будет пропускать клики по любым
+        # старым меню в чате (т.к. on_preview сбросил active_menu_msg_id),
+        # и пользователь сможет случайно «оживить» устаревшее меню.
+        from utils.fsm_bridge import update_active_menu
+        await update_active_menu(
+            bot.id, chat_id, chat_id, menu_msg.message_id,
+        )
+    else:
+        await bot.send_message(
+            chat_id,
+            "Эксперимент завершен. Спасибо за участие!"
+        )
 
 
 # ── рандомизация ──
@@ -371,16 +528,50 @@ def filter_trials_by_list(trials: list, list_id: str) -> list:
     return [t for t in trials if t.get("list_id") in (list_id, None)]
 
 
-def prepare_trials_for_session(phase: dict, assigned_list: Optional[str]) -> list:
-    """подготовить список проб для конкретной сессии: фильтр по листу + рандомизация"""
+def prepare_trials_for_session(
+    phase: dict,
+    assigned_list: Optional[str],
+    randomize_button_positions: bool = False,
+) -> list:
+    """подготовить список проб для конкретной сессии: фильтр по листу + рандомизация.
+
+    если randomize_button_positions=True и фаза использует кнопочный ответ,
+    в каждой пробе порядок response_options тасуется индивидуально.
+    это снимает carry-over эффект курсора при измерении RT.
+    """
     trials = list(phase.get("trials", []))
 
     # фильтрация по листу
     if assigned_list:
         trials = filter_trials_by_list(trials, assigned_list)
 
-    # рандомизация
+    # рандомизация порядка проб
     if phase.get("randomize_order", False):
         trials = randomize_trials(trials)
+
+    # рандомизация позиций кнопок ответа внутри каждой пробы
+    response_type = phase.get("response_type", "buttons")
+    settings = phase.get("settings", {}) or {}
+    # maze сам мешает target/distractor на этапе build_phase — не дублируем
+    is_maze = bool(settings.get("is_maze"))
+    if (
+        randomize_button_positions
+        and response_type == "buttons"
+        and not is_maze
+    ):
+        rebuilt = []
+        for t in trials:
+            options = t.get("response_options") or []
+            if len(options) >= 2:
+                # копируем пробу и тасуем опции, не трогая исходник
+                # (он шарится между сессиями).
+                t_copy = dict(t)
+                shuffled = list(options)
+                random.shuffle(shuffled)
+                t_copy["response_options"] = shuffled
+                rebuilt.append(t_copy)
+            else:
+                rebuilt.append(t)
+        trials = rebuilt
 
     return trials

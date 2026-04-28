@@ -74,6 +74,29 @@ async def update_experiment(experiment_id: str, update: dict):
     )
 
 
+async def delete_experiment_cascade(experiment_id: str) -> dict:
+    """удалить эксперимент и все связанные данные: сессии, ответы, медиа.
+    возвращает количество удалённых записей по коллекциям."""
+    answers_res = await answers_col.delete_many({"experiment_id": experiment_id})
+    sessions_res = await sessions_col.delete_many({"experiment_id": experiment_id})
+    media_res = await media_col.delete_many({"experiment_id": experiment_id})
+    exp_res = await experiments_col.delete_one(
+        {"_id": ObjectId(experiment_id)}
+    )
+    logger.info(
+        "удалён эксперимент %s: answers=%d, sessions=%d, media=%d",
+        experiment_id,
+        answers_res.deleted_count, sessions_res.deleted_count,
+        media_res.deleted_count,
+    )
+    return {
+        "experiment": exp_res.deleted_count,
+        "sessions": sessions_res.deleted_count,
+        "answers": answers_res.deleted_count,
+        "media": media_res.deleted_count,
+    }
+
+
 # ── сессии ──
 
 async def create_session(data: dict) -> str:

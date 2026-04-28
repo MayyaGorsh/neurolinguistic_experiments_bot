@@ -2,6 +2,7 @@ import logging
 
 from aiogram import Router, Bot, types
 from aiogram.filters import CommandStart, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
@@ -80,12 +81,15 @@ async def cmd_start_deep_link(message: types.Message, command: CommandObject, bo
 
 
 @router.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
     """обычный /start — первый контакт с ботом, регистрация исследователя"""
+    # /start — это «жёсткий ресет» интерфейса. чистим FSM, чтобы старые
+    # active_menu_msg_id и waiting_* флаги не мешали новой сессии.
+    await state.clear()
     user = await repo.get_user(message.from_user.id)
 
     if user and user["role"] == "researcher":
-        await show_researcher_menu(message)
+        await show_researcher_menu(message, state)
         return
 
     # первое обращение — регистрируем как исследователя
@@ -105,10 +109,10 @@ async def cmd_start(message: types.Message):
         "Добро пожаловать! Вы зарегистрированы как исследователь.\n"
         "Используйте меню ниже для работы с экспериментами."
     )
-    await show_researcher_menu(message)
+    await show_researcher_menu(message, state)
 
 
-async def show_researcher_menu(message: types.Message):
+async def show_researcher_menu(message: types.Message, state: FSMContext | None = None):
     """главное меню исследователя"""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Создать эксперимент", callback_data="create_experiment")],
@@ -116,4 +120,8 @@ async def show_researcher_menu(message: types.Message):
         [InlineKeyboardButton(text="Результаты", callback_data="results_menu")],
         [InlineKeyboardButton(text="Рассылка участникам", callback_data="promo_menu")],
     ])
-    await message.answer("Главное меню:", reply_markup=kb)
+    sent = await message.answer("Главное меню:", reply_markup=kb)
+    # фиксируем id главного меню как «текущий активный экран», чтобы
+    # StaleMenuGuard блокировал клики по предыдущим меню в чате.
+    if state is not None:
+        await state.update_data(active_menu_msg_id=sent.message_id)

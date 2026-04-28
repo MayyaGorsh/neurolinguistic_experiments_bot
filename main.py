@@ -8,6 +8,8 @@ from aiogram.enums import ParseMode
 from config import BOT_TOKEN
 from logger import setup_logger
 from handlers import start, researcher, participant, free_form, media_upload, promo, common
+from utils.stale_guard import StaleMenuGuard
+from utils.fsm_bridge import register_storage
 
 logger = setup_logger()
 
@@ -22,6 +24,17 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
+
+    # делаем FSM-storage доступным runner-у (для обновления
+    # active_menu_msg_id после завершения превью эксперимента)
+    register_storage(dp.fsm.storage)
+
+    # вешаем StaleMenuGuard на researcher и promo роутеры — он отсекает
+    # клики по «протухшим» меню (см. utils/stale_guard.py).
+    # participant и media_upload не покрываем: там семантика «активного»
+    # сообщения другая — не по message_id, а по полям сессии.
+    researcher.router.callback_query.outer_middleware(StaleMenuGuard())
+    promo.router.callback_query.outer_middleware(StaleMenuGuard())
 
     # подключаем роутеры
     dp.include_router(start.router)
