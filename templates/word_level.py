@@ -8,22 +8,13 @@
 - Word translation (open)
 """
 
-from templates.registry import register, get_response_options, get_likert_config
+from templates.registry import register, get_likert_config
 
 
 # ── Lexical decision ──
-# CSV: stimulus, class (word / nonword)
-# кнопки "Слово" / "Не слово", измерение RT
+# CSV: stimulus, opt1..opt6 (правильный помечен *)
 
 def build_lexical_decision(trials, config, phase_index=0):
-    options = get_response_options(config, ["Слово", "Не слово"])
-    for t in trials:
-        t["response_options"] = options
-        cls = t.get("auxiliary", {}).get("class", "").strip().lower()
-        if cls in ("word", "слово"):
-            t["correct_answer"] = options[0]
-        elif cls in ("nonword", "не слово"):
-            t["correct_answer"] = options[1]
     return {
         "phase_index": phase_index,
         "title": "Lexical Decision",
@@ -38,15 +29,14 @@ def build_lexical_decision(trials, config, phase_index=0):
 
 
 register("lexical_decision", {
-    "required_columns": ["stimulus", "class"],
+    "required_columns": ["stimulus", "opt1", "opt2"],
     "csv_mapping": {
         "stimulus_content": "stimulus",
-        "auxiliary": ["class"],
+        "response_options": ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6"],
     },
     "build_phase": build_lexical_decision,
-    "export_columns": ["class"],
+    "export_columns": [],
     "phases_info": ["Lexical Decision"],
-    "default_response_options": {"main": ["Слово", "Не слово"]},
 })
 
 

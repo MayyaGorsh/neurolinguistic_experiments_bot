@@ -14,6 +14,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     BufferedInputFile,
+    FSInputFile,
 )
 
 from db import repositories as repo
@@ -219,11 +220,21 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     # кнопки кастомизации — только если шаблон объявил дефолты
     tmpl_info_for_btn = tmpl_registry.get_template(tmpl)
     if tmpl_info_for_btn:
-        if tmpl_info_for_btn.get("default_response_options"):
+        # «🔤 Кнопки ответа» показываем, когда у шаблона есть
+        # default_response_options и нет Likert-шкалы. шаблоны, где
+        # варианты приходят строго из CSV (forced_choice, cloze_mc,
+        # word_translation_mc, video_task), default_response_options
+        # не объявляют — кнопка для них и не появляется. для шаблонов
+        # с гибридом (csv-опции с фолбэком на дефолты — TVJT, statement_
+        # verification) кастомизация валидна для дефолтного режима, и
+        # это согласуется с тем, что «Рандомизация позиций кнопок» тоже
+        # показывается.
+        has_likert = bool(tmpl_info_for_btn.get("default_likert"))
+        if tmpl_info_for_btn.get("default_response_options") and not has_likert:
             buttons.append([InlineKeyboardButton(
                 text="🔤 Кнопки ответа", callback_data="cfg_buttons",
             )])
-        if tmpl_info_for_btn.get("default_likert"):
+        if has_likert:
             buttons.append([InlineKeyboardButton(
                 text="📊 Шкала ответа", callback_data="cfg_likert",
             )])
@@ -251,112 +262,128 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     await state.set_state(CreateExperiment.configuring)
 
 
+_CONFIG_HELP_PAGE_1 = (
+    "<b>Параметры эксперимента — 1/2</b>\n\n"
+    "<b>🎲 Рандомизация</b>\n"
+    "Если включена — стимулы (слова, предложения и т.п.) будут "
+    "показываться каждому участнику в случайном порядке. "
+    "Если выключена — все увидят стимулы в том же порядке, "
+    "в каком они идут в CSV-файле.\n\n"
+    "<b>🔀 Рандомизация позиций кнопок</b>\n"
+    "Если включена — на каждой пробе с вариантами ответа "
+    "(«Слово»/«Не слово», «Да»/«Нет» и т.п.) порядок кнопок будет "
+    "случайным. Это важно при измерении времени реакции (RT): "
+    "иначе курсор/палец оказывается ближе к одному из вариантов и "
+    "ответы «не слово» подряд получаются систематически быстрее. "
+    "Не влияет на шкалы Likert и текстовый ввод.\n\n"
+    "<b>🧹 Чистить предыдущие пробы</b>\n"
+    "Если включено (по умолчанию — да) — перед показом следующей "
+    "пробы бот удаляет своё предыдущее сообщение со стимулом и "
+    "инструкции этой пробы. Участник видит только текущий стимул, "
+    "не может сравнить с предыдущими и не получает контекст от уже "
+    "пройденных проб. Если выключено — все стимулы накапливаются "
+    "в чате.\n"
+    "Технические ограничения: ответы участника текстом или "
+    "голосом удалить нельзя (Telegram запрещает боту удалять "
+    "сообщения пользователя в личке), а сообщения старше 48 часов "
+    "тоже не удаляются.\n\n"
+    "<b>📋 Распределение по листам</b>\n"
+    "«Лист» — это отдельный набор стимулов. Если у вас несколько "
+    "вариантов эксперимента (например, лист A и лист B с разными "
+    "наборами стимулов), бот автоматически распределит участников по "
+    "листам поровну. Каждый участник пройдёт только один лист.\n\n"
+    "<b>👤 Демография</b>\n"
+    "Анкета, которую участник заполнит перед экспериментом. "
+    "Ответы сохраняются вместе с результатами. Три варианта:\n"
+    "• <b>Нет</b> — анкета не показывается.\n"
+    "• <b>Стандартная</b> — заранее готовый набор: "
+    "возраст (открытый ответ), пол (М/Ж/Другое), "
+    "город (открытый ответ), родной язык (открытый ответ).\n"
+    "• <b>Своя</b> — вы загружаете CSV-файл со своими вопросами. "
+    "Формат (разделитель — точка с запятой):\n"
+    "<code>key;text;type;options</code>\n"
+    "где <i>key</i> — короткий идентификатор (напр. <code>age</code>), "
+    "<i>text</i> — сам вопрос, "
+    "<i>type</i> — <code>open_text</code> (любой ответ текстом) или "
+    "<code>buttons</code> (выбор из вариантов), "
+    "<i>options</i> — варианты для <code>buttons</code>, "
+    "разделённые <code>|</code> (для <code>open_text</code> оставьте пустым)."
+)
+
+_CONFIG_HELP_PAGE_2 = (
+    "<b>Параметры эксперимента — 2/2</b>\n\n"
+    "<b>⏱ Тайм-аут и время реакции (RT)</b>\n"
+    "Ограничение времени (в секундах) на ответ по каждому стимулу. "
+    "Если участник не успел — ответ засчитывается как пропуск, "
+    "эксперимент идёт дальше. «Нет» — времени неограниченно.\n"
+    "<b>Важно про RT в открытых ответах.</b> В пробах с кнопками "
+    "(<i>buttons</i>, <i>likert</i>, <i>multiple_choice</i>) RT "
+    "измеряется от показа стимула до нажатия кнопки. "
+    "В <i>open_text</i> и <i>voice</i> RT — это время от показа стимула "
+    "до <b>отправки</b> сообщения, то есть включает и набор/запись, "
+    "а не только задержку до начала ответа. Telegram не уведомляет бота "
+    "о том, что пользователь начал печатать или удерживать запись, "
+    "поэтому «чистое» время до начала ответа измерить нельзя. "
+    "Тайм-аут в этих пробах тоже считается до отправки сообщения: "
+    "если за N секунд участник не <i>отправил</i> ответ — ставится "
+    "пропуск, даже если он печатал или говорил.\n\n"
+    "<b>🔁 Повторное прохождение</b>\n"
+    "Если включено — один и тот же участник может пройти эксперимент "
+    "несколько раз. Если выключено — бот не даст пройти второй раз.\n\n"
+    "<b>📎 Загрузить CSV</b>\n"
+    "Файл со стимулами. Формат зависит от выбранного шаблона "
+    "(колонки <i>stimulus</i>, <i>class</i>, и т.п.). Если фаз или листов "
+    "несколько — CSV загружается отдельно для каждой фазы и листа.\n\n"
+    "<b>📊 Шкала ответа (Likert) — как располагаются кнопки</b>\n"
+    "• Если у всех позиций шкалы подписи — это просто цифры "
+    "(<code>1</code>, <code>2</code>, …, <code>N</code>), кнопки "
+    "встанут в один горизонтальный ряд.\n"
+    "• Если хотя бы у одной позиции есть текстовая подпись "
+    "(например, «Совсем не ожидаемо» на 1), все кнопки автоматически "
+    "выкладываются в вертикальный список. Иначе Telegram обрезает "
+    "длинные подписи на мобильных экранах.\n"
+    "Поэтому если хочется компактную горизонтальную шкалу — "
+    "не задавайте подписи, оставьте только цифры. Если важно "
+    "обозначить полюса словами — будьте готовы к вертикальному виду.\n\n"
+    "<b>🔤 Кнопки ответа</b>\n"
+    "Кастомизация лейблов кнопок доступна только для шаблонов с "
+    "картинками (Picture Selection, Covered Box). По умолчанию лейблы — "
+    "«1», «2» (и «3» для трёх картинок). Их можно переименовать "
+    "(например, «1» → «Левая»). Корректность считается по позиции: "
+    "колонка <i>correct_img</i> в CSV указывает, какая картинка "
+    "правильная, бот подставляет лейбл соответствующей позиции.\n"
+    "Не меняйте порядок лейблов местами — это сместит соответствие "
+    "позиций и сломает проверку корректности.\n\n"
+    "<b>🌟 Правильный ответ в кнопочных шаблонах</b>\n"
+    "Для остальных кнопочных шаблонов варианты ответа задаются "
+    "колонками <code>opt1..opt6</code> в CSV. Поставьте звёздочку "
+    "<code>*</code> перед текстом правильной опции — например, "
+    "<code>*Слово</code>. Если правильного ответа нет (например, в "
+    "Sensicality Judgment), просто не ставьте звёздочки — поле "
+    "<i>is_correct</i> в результатах останется пустым."
+)
+
+
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_help")
 async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
-    """объяснение параметров эксперимента для пользователя"""
+    """объяснение параметров эксперимента — страница 1"""
     await callback.answer()
-    text = (
-        "<b>Параметры эксперимента</b>\n\n"
-        "<b>🎲 Рандомизация</b>\n"
-        "Если включена — стимулы (слова, предложения и т.п.) будут "
-        "показываться каждому участнику в случайном порядке. "
-        "Если выключена — все увидят стимулы в том же порядке, "
-        "в каком они идут в CSV-файле.\n\n"
-        "<b>🔀 Рандомизация позиций кнопок</b>\n"
-        "Если включена — на каждой пробе с вариантами ответа "
-        "(«Слово»/«Не слово», «Да»/«Нет» и т.п.) порядок кнопок будет "
-        "случайным. Это важно при измерении времени реакции (RT): "
-        "иначе курсор/палец оказывается ближе к одному из вариантов и "
-        "ответы «не слово» подряд получаются систематически быстрее. "
-        "Не влияет на шкалы Likert и текстовый ввод.\n\n"
-        "<b>🧹 Чистить предыдущие пробы</b>\n"
-        "Если включено (по умолчанию — да) — перед показом следующей "
-        "пробы бот удаляет своё предыдущее сообщение со стимулом и "
-        "инструкции этой пробы. Участник видит только текущий стимул, "
-        "не может сравнить с предыдущими и не получает контекст от уже "
-        "пройденных проб. Если выключено — все стимулы накапливаются "
-        "в чате.\n"
-        "Технические ограничения: ответы участника текстом или "
-        "голосом удалить нельзя (Telegram запрещает боту удалять "
-        "сообщения пользователя в личке), а сообщения старше 48 часов "
-        "тоже не удаляются.\n\n"
-        "<b>📋 Распределение по листам</b>\n"
-        "«Лист» — это отдельный набор стимулов. Если у вас несколько "
-        "вариантов эксперимента (например, лист A и лист B с разными "
-        "наборами стимулов), бот автоматически распределит участников по "
-        "листам поровну. Каждый участник пройдёт только один лист.\n\n"
-        "<b>👤 Демография</b>\n"
-        "Анкета, которую участник заполнит перед экспериментом. "
-        "Ответы сохраняются вместе с результатами. Три варианта:\n"
-        "• <b>Нет</b> — анкета не показывается.\n"
-        "• <b>Стандартная</b> — заранее готовый набор: "
-        "возраст (открытый ответ), пол (М/Ж/Другое), "
-        "город (открытый ответ), родной язык (открытый ответ).\n"
-        "• <b>Своя</b> — вы загружаете CSV-файл со своими вопросами. "
-        "Формат (разделитель — точка с запятой):\n"
-        "<code>key;text;type;options</code>\n"
-        "где <i>key</i> — короткий идентификатор (напр. <code>age</code>), "
-        "<i>text</i> — сам вопрос, "
-        "<i>type</i> — <code>open_text</code> (любой ответ текстом) или "
-        "<code>buttons</code> (выбор из вариантов), "
-        "<i>options</i> — варианты для <code>buttons</code>, "
-        "разделённые <code>|</code> (для <code>open_text</code> оставьте пустым).\n\n"
-        "<b>⏱ Тайм-аут и время реакции (RT)</b>\n"
-        "Ограничение времени (в секундах) на ответ по каждому стимулу. "
-        "Если участник не успел — ответ засчитывается как пропуск, "
-        "эксперимент идёт дальше. «Нет» — времени неограниченно.\n"
-        "<b>Важно про RT в открытых ответах.</b> В пробах с кнопками "
-        "(<i>buttons</i>, <i>likert</i>, <i>multiple_choice</i>) RT "
-        "измеряется от показа стимула до нажатия кнопки. "
-        "В <i>open_text</i> и <i>voice</i> RT — это время от показа стимула "
-        "до <b>отправки</b> сообщения, то есть включает и набор/запись, "
-        "а не только задержку до начала ответа. Telegram не уведомляет бота "
-        "о том, что пользователь начал печатать или удерживать запись, "
-        "поэтому «чистое» время до начала ответа измерить нельзя. "
-        "Тайм-аут в этих пробах тоже считается до отправки сообщения: "
-        "если за N секунд участник не <i>отправил</i> ответ — ставится "
-        "пропуск, даже если он печатал или говорил.\n\n"
-        "<b>🔁 Повторное прохождение</b>\n"
-        "Если включено — один и тот же участник может пройти эксперимент "
-        "несколько раз. Если выключено — бот не даст пройти второй раз .\n\n"
-        "<b>📎 Загрузить CSV</b>\n"
-        "Файл со стимулами. Формат зависит от выбранного шаблона "
-        "(колонки <i>stimulus</i>, <i>class</i>, и т.п.). Если фаз или листов"
-        "несколько — CSV загружается отдельно для каждой фазы и листа.\n\n"
-        "<b>📊 Шкала ответа (Likert) — как располагаются кнопки</b>\n"
-        "• Если у всех позиций шкалы подписи — это просто цифры "
-        "(<code>1</code>, <code>2</code>, …, <code>N</code>), кнопки "
-        "встанут в один горизонтальный ряд.\n"
-        "• Если хотя бы у одной позиции есть текстовая подпись "
-        "(например, «Совсем не ожидаемо» на 1), все кнопки автоматически "
-        "выкладываются в вертикальный список. Иначе Telegram обрезает "
-        "длинные подписи на мобильных экранах.\n"
-        "Поэтому если хочется компактную горизонтальную шкалу — "
-        "не задавайте подписи, оставьте только цифры. Если важно "
-        "обозначить полюса словами — будьте готовы к вертикальному виду.\n\n"
-        "<b>🔤 Кнопки ответа и проверка корректности</b>\n"
-        "В подменю «🔤 Кнопки ответа» вы задаёте лейблы (текст) для "
-        "каждой семантической категории шаблона: позиция №1 — первая "
-        "категория, №2 — вторая. Это <b>не порядок показа на экране</b>, "
-        "а сопоставление «лейбл ↔ категория». Тасование физических "
-        "позиций кнопок при показе — отдельная настройка "
-        "(«🔀 Рандомизация позиций кнопок»).\n"
-        "Что важно помнить:\n"
-        "• <b>Не меняйте местами сами лейблы категорий.</b> Если "
-        "поставите «Не слово» на позицию №1, шаблон будет считать "
-        "первой категорией «не-слово», и для CSV со <i>class=word</i> "
-        "правильным ответом станет «Не слово».\n"
-        "• <b>Переименование безопасно</b> — например, «Слово» → «Yes». "
-        "Корректность считается автоматически по тому же лейблу, "
-        "который вы поставили.\n"
-        "• Если шаблон ожидает варианты прямо из CSV "
-        "(<code>opt1..opt6</code> с <code>*</code>), кастомизация кнопок "
-        "не применяется — текст в CSV и есть текст кнопки и ответа."
-    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="Дальше →", callback_data="cfg_help_2")],
+        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
     ])
-    await _render_screen(callback, text, kb, state=state)
+    await _render_screen(callback, _CONFIG_HELP_PAGE_1, kb, state=state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_help_2")
+async def show_config_help_page_2(callback: types.CallbackQuery, state: FSMContext):
+    """объяснение параметров эксперимента — страница 2"""
+    await callback.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Назад", callback_data="cfg_help")],
+        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
+    ])
+    await _render_screen(callback, _CONFIG_HELP_PAGE_2, kb, state=state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_back")
@@ -447,7 +474,7 @@ async def show_demographics_menu(callback: types.CallbackQuery, state: FSMContex
         [InlineKeyboardButton(text="❌ Нет", callback_data="demo_off")],
         [InlineKeyboardButton(text="📋 Стандартная", callback_data="demo_standard")],
         [InlineKeyboardButton(text="📎 Загрузить свою (CSV)", callback_data="demo_upload")],
-        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
     ])
     await _render_screen(callback, text, kb, state=state)
 
@@ -672,7 +699,7 @@ async def _show_buttons_submenu(callback: types.CallbackQuery, state: FSMContext
         text="↩️ Сбросить к дефолту", callback_data="btn_reset",
     )])
     buttons.append([InlineKeyboardButton(
-        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+        text="← Назад к настройкам", callback_data="cfg_back",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await _render_screen(callback, text, kb, state=state)
@@ -694,7 +721,7 @@ async def _send_buttons_submenu(message: types.Message, state: FSMContext):
         text=f"✏️ {i+1}: {lbl}", callback_data=f"btn_edit_{i}",
     )] for i, lbl in enumerate(labels)]
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="btn_reset")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
+    buttons.append([InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")])
     await _render_screen(
         message, text,
         InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -728,7 +755,7 @@ async def _send_likert_submenu(message: types.Message, state: FSMContext):
             callback_data=f"lkt_edit_{i}",
         )])
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="lkt_reset")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="cfg_back")])
+    buttons.append([InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")])
     await _render_screen(
         message, text,
         InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -833,7 +860,7 @@ async def _show_likert_submenu(callback: types.CallbackQuery, state: FSMContext)
         text="↩️ Сбросить к дефолту", callback_data="lkt_reset",
     )])
     buttons.append([InlineKeyboardButton(
-        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+        text="← Назад к настройкам", callback_data="cfg_back",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await _render_screen(callback, text, kb, state=state)
@@ -975,7 +1002,7 @@ def _build_instructions_text_and_kb(data: dict) -> tuple[str, InlineKeyboardMark
         text="↩️ Сбросить все к дефолту", callback_data="instr_reset",
     )])
     buttons.append([InlineKeyboardButton(
-        text="⬅️ Назад к настройкам", callback_data="cfg_back",
+        text="← Назад к настройкам", callback_data="cfg_back",
     )])
     return "\n".join(text_lines), InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1445,10 +1472,43 @@ async def on_csv_slot(callback: types.CallbackQuery, state: FSMContext):
             "Если отправите новый файл — он заменит текущий.</i>"
         )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="csv_back_to_manifest")],
-    ])
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    template_type = data.get("template_type", "free_form")
+    # пример заполнения csv — для конкретной фазы (выбранного слота).
+    # фазы шаблона могут иметь разные форматы (например, в probe_recognition
+    # фаза 2 содержит дополнительную колонку correct), поэтому пример
+    # подбирается per-phase: registry.get_example_csv_path(code, phase).
+    if tmpl_registry.get_example_csv_path(template_type, ph):
+        kb_rows.append([InlineKeyboardButton(
+            text="📄 Прислать пример заполнения файла",
+            callback_data="csv_example",
+        )])
+    kb_rows.append([InlineKeyboardButton(
+        text="❌ Отмена", callback_data="csv_back_to_manifest",
+    )])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await _render_screen(callback, prompt, kb, state=state)
+
+
+@router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_example")
+async def on_csv_example(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """прислать csv-пример для выбранного слота (с учётом фазы)."""
+    await callback.answer()
+    data = await state.get_data()
+    template_type = data.get("template_type", "free_form")
+    phase = int(data.get("current_phase_num") or 1)
+    path = tmpl_registry.get_example_csv_path(template_type, phase)
+    if not path:
+        await callback.message.answer("Для этого шаблона примера нет.")
+        return
+    await bot.send_document(
+        callback.from_user.id,
+        FSInputFile(path, filename=f"{template_type}_phase{phase}_example.csv"),
+        caption=(
+            "Пример заполнения CSV для этой фазы. Скачайте, "
+            "адаптируйте под свой материал и загрузите обратно."
+        ),
+    )
 
 
 @router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_back_to_manifest")

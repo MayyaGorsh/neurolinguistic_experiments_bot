@@ -392,6 +392,13 @@ async def handle_timeout(
     except asyncio.CancelledError:
         return
 
+    # тайм-аут сработал. убираем себя из реестра до того, как пойдём
+    # в advance_trial: иначе на последней пробе цепочка дойдёт до
+    # finish_experiment, которая дёрнет cancel_timeout — и отменит
+    # нашу же текущую задачу. следующий await поднимет CancelledError,
+    # и «Эксперимент завершен» не успеет отправиться.
+    _timeout_tasks.pop(session_id, None)
+
     # тайм-аут сработал
     phase_idx = session["current_phase"]
     trial_idx = session["current_trial"]
@@ -483,10 +490,13 @@ async def finish_experiment(bot: Bot, chat_id: int, session: dict):
     cancel_timeout(session_id)
     _stimulus_shown_at.pop(session_id, None)
 
-    await repo.update_session(session_id, {
-        "status": "completed",
-        "finished_at": datetime.utcnow(),
-    })
+    # атомарный гард от двойного завершения: если участник нажал кнопку
+    # последней пробы дважды (или тайм-аут совпал с ответом), оба
+    # параллельных коллбэка добегают сюда. модифицируем сессию только
+    # если она ещё не completed — проигравший коллбэк просто выходит,
+    # не дублируя «эксперимент завершён».
+    if not await repo.mark_session_completed(session_id):
+        return
     logger.info("сессия %s завершена", session_id)
 
     if session.get("is_preview"):

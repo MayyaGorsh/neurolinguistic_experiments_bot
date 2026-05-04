@@ -15,7 +15,7 @@ from templates.registry import register, get_response_options
 def build_picture_selection(trials, config, phase_index=0):
     import random
 
-    options = get_response_options(config, ["Картинка 1", "Картинка 2"])
+    options = get_response_options(config, ["1", "2"])
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
@@ -64,7 +64,7 @@ register("picture_selection", {
     "build_phase": build_picture_selection,
     "export_columns": ["pair_id", "img_1", "img_2"],
     "phases_info": ["Picture Selection"],
-    "default_response_options": {"main": ["Картинка 1", "Картинка 2"]},
+    "default_response_options": {"main": ["1", "2"]},
 })
 
 
@@ -72,9 +72,7 @@ register("picture_selection", {
 # CSV: stimulus, pair_id, img_1_filename, img_2_filename, img_3_filename, correct_img (опц.)
 
 def build_covered_box(trials, config, phase_index=0):
-    options = get_response_options(
-        config, ["Картинка 1", "Картинка 2", "Картинка 3"]
-    )
+    options = get_response_options(config, ["1", "2", "3"])
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
@@ -125,9 +123,7 @@ register("covered_box", {
     "build_phase": build_covered_box,
     "export_columns": ["pair_id", "img_1", "img_2", "img_3"],
     "phases_info": ["Covered Box"],
-    "default_response_options": {
-        "main": ["Картинка 1", "Картинка 2", "Картинка 3"],
-    },
+    "default_response_options": {"main": ["1", "2", "3"]},
 })
 
 

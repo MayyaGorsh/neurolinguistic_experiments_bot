@@ -129,6 +129,19 @@ async def update_session(session_id: str, update: dict):
     )
 
 
+async def mark_session_completed(session_id: str) -> bool:
+    """атомарно перевести сессию в completed.
+    возвращает True, если этот вызов выиграл гонку (статус был не completed),
+    и False, если сессия уже была завершена кем-то ещё (двойной клик, гонка
+    тайм-аута и ответа). вызывающая сторона использует это, чтобы не слать
+    «эксперимент завершён» повторно."""
+    result = await sessions_col.update_one(
+        {"_id": ObjectId(session_id), "status": {"$ne": "completed"}},
+        {"$set": {"status": "completed", "finished_at": datetime.utcnow()}},
+    )
+    return result.modified_count == 1
+
+
 async def count_sessions_by_list(experiment_id: str) -> dict:
     """подсчет количества сессий по каждому листу для balanced distribution"""
     pipeline = [

@@ -8,7 +8,12 @@
 - phases_info: список названий фаз (для шаблонов с >1 фазой, чтобы запрашивать CSV по фазам)
 """
 
+import os
+
 _TEMPLATES: dict = {}
+
+# директория с примерами CSV — по одному файлу <code>.csv на шаблон
+_EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 
 
 def register(code: str, info: dict):
@@ -22,6 +27,24 @@ def get_template(code: str) -> dict | None:
 
 def all_templates() -> dict:
     return dict(_TEMPLATES)
+
+
+def get_example_csv_path(code: str, phase: int = 1) -> str | None:
+    """путь к csv-примеру заполнения для конкретной фазы шаблона.
+
+    конвенция имён в examples/:
+    - <code>.csv — фаза 1 (или единственная фаза);
+    - <code>_phase<N>.csv — фаза N≥2, если её формат отличается от первой.
+
+    если файла под фазу N нет — возвращаем фазу 1 (значит, формат CSV
+    в этой фазе совпадает с первой). если и его нет — None.
+    """
+    if phase >= 2:
+        path = os.path.join(_EXAMPLES_DIR, f"{code}_phase{phase}.csv")
+        if os.path.isfile(path):
+            return path
+    path = os.path.join(_EXAMPLES_DIR, f"{code}.csv")
+    return path if os.path.isfile(path) else None
 
 
 def get_response_options(config: dict, defaults: list, key: str = "main") -> list:

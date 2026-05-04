@@ -7,6 +7,7 @@
 import logging
 
 from aiogram import Router, Bot, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
@@ -24,9 +25,24 @@ async def on_begin_experiment(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
     experiment_id = callback.data.replace("begin_", "")
 
+    # сразу убираем клавиатуру у приветствия, чтобы повторный клик
+    # (или скролл к старому сообщению с кнопкой) не запустил эксперимент
+    # ещё раз. делаем это до всех дальнейших проверок и до создания
+    # сессии, чтобы кнопка точно «погасла» в любом исходе.
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
     experiment = await repo.get_experiment(experiment_id)
     if not experiment:
         await callback.message.answer("Эксперимент не найден.")
+        return
+
+    # эксперимент мог быть деактивирован после того, как участник открыл
+    # ссылку — не запускаем сессию, если он сейчас не active.
+    if experiment.get("status") != "active":
+        await callback.message.answer("Этот эксперимент сейчас неактивен.")
         return
 
     # создаем сессию
