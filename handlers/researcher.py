@@ -142,7 +142,9 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     randomize = data.get("randomize", False)
     randomize_buttons = data.get("randomize_button_positions", False)
     delete_previous = data.get("delete_previous_trials", True)
-    use_lists = data.get("use_lists", False)
+    lists_count = int(data.get("lists_count", 1) or 1)
+    use_lists = lists_count >= 2
+    lists_label = "нет" if not use_lists else f"{lists_count} шт."
     demo_mode = data.get("demographics_mode", "off")  # off / standard / custom
     demo_custom = data.get("demographics_custom", [])
     time_limit = data.get("time_limit", None)
@@ -154,33 +156,44 @@ async def show_config_menu(message_or_cb, state: FSMContext):
         "custom": f"своя ({len(demo_custom)} вопр.)",
     }.get(demo_mode, "нет")
 
-    text = (
-        f"<b>Настройки эксперимента</b>\n\n"
-        f"Шаблон: {tmpl}\n"
-        f"Рандомизация: {'да' if randomize else 'нет'}\n"
-        f"Рандомизация позиций кнопок: {'да' if randomize_buttons else 'нет'}\n"
-        f"Чистить предыдущие пробы: {'да' if delete_previous else 'нет'}\n"
-        f"Листы: {'да' if use_lists else 'нет'}\n"
-        f"Демография: {demo_label}\n"
-        f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}\n"
-        f"Повторное прохождение: {'да' if allow_repeat else 'нет'}\n"
-    )
+    has_buttons = _template_has_buttons(tmpl)
+
+    text_parts = [
+        f"<b>Настройки эксперимента</b>\n",
+        f"Шаблон: {tmpl}",
+        f"Рандомизация: {'да' if randomize else 'нет'}",
+    ]
+    if has_buttons:
+        text_parts.append(
+            f"Рандомизация позиций кнопок: {'да' if randomize_buttons else 'нет'}"
+        )
+    text_parts += [
+        f"Чистить предыдущие пробы: {'да' if delete_previous else 'нет'}",
+        f"Листы: {lists_label}",
+        f"Демография: {demo_label}",
+        f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}",
+        f"Повторное прохождение: {'да' if allow_repeat else 'нет'}",
+    ]
+    text = "\n".join(text_parts) + "\n"
 
     buttons = [
         [InlineKeyboardButton(
             text=f"{'✅' if randomize else '❌'} Рандомизация",
             callback_data="cfg_randomize",
         )],
-        [InlineKeyboardButton(
+    ]
+    if has_buttons:
+        buttons.append([InlineKeyboardButton(
             text=f"{'✅' if randomize_buttons else '❌'} Рандомизация позиций кнопок",
             callback_data="cfg_randomize_buttons",
-        )],
+        )])
+    buttons += [
         [InlineKeyboardButton(
             text=f"{'✅' if delete_previous else '❌'} Чистить предыдущие пробы",
             callback_data="cfg_delete_previous",
         )],
         [InlineKeyboardButton(
-            text=f"{'✅' if use_lists else '❌'} Распределение по листам",
+            text=f"📋 Распределение по листам: {lists_label}",
             callback_data="cfg_lists",
         )],
         [InlineKeyboardButton(
@@ -288,10 +301,21 @@ async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
         "<code>buttons</code> (выбор из вариантов), "
         "<i>options</i> — варианты для <code>buttons</code>, "
         "разделённые <code>|</code> (для <code>open_text</code> оставьте пустым).\n\n"
-        "<b>⏱ Тайм-аут</b>\n"
+        "<b>⏱ Тайм-аут и время реакции (RT)</b>\n"
         "Ограничение времени (в секундах) на ответ по каждому стимулу. "
         "Если участник не успел — ответ засчитывается как пропуск, "
-        "эксперимент идёт дальше. «Нет» — времени неограниченно.\n\n"
+        "эксперимент идёт дальше. «Нет» — времени неограниченно.\n"
+        "<b>Важно про RT в открытых ответах.</b> В пробах с кнопками "
+        "(<i>buttons</i>, <i>likert</i>, <i>multiple_choice</i>) RT "
+        "измеряется от показа стимула до нажатия кнопки. "
+        "В <i>open_text</i> и <i>voice</i> RT — это время от показа стимула "
+        "до <b>отправки</b> сообщения, то есть включает и набор/запись, "
+        "а не только задержку до начала ответа. Telegram не уведомляет бота "
+        "о том, что пользователь начал печатать или удерживать запись, "
+        "поэтому «чистое» время до начала ответа измерить нельзя. "
+        "Тайм-аут в этих пробах тоже считается до отправки сообщения: "
+        "если за N секунд участник не <i>отправил</i> ответ — ставится "
+        "пропуск, даже если он печатал или говорил.\n\n"
         "<b>🔁 Повторное прохождение</b>\n"
         "Если включено — один и тот же участник может пройти эксперимент "
         "несколько раз. Если выключено — бот не даст пройти второй раз .\n\n"
@@ -346,6 +370,7 @@ async def cfg_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
         waiting_instruction_edit=None,
         waiting_description_edit=False,
         waiting_timeout=False,
+        waiting_lists_count=False,
     )
     await show_config_menu(callback, state)
 
@@ -379,11 +404,25 @@ async def toggle_delete_previous(callback: types.CallbackQuery, state: FSMContex
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_lists")
-async def toggle_lists(callback: types.CallbackQuery, state: FSMContext):
+async def ask_lists_count(callback: types.CallbackQuery, state: FSMContext):
+    """запросить число листов; 1 = без распределения, ≥2 = делим респондентов"""
     await callback.answer()
     data = await state.get_data()
-    await state.update_data(use_lists=not data.get("use_lists", False))
-    await show_config_menu(callback, state)
+    current = int(data.get("lists_count", 1) or 1)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cfg_back")],
+    ])
+    await _render_screen(
+        callback,
+        "Сколько <b>листов</b> в эксперименте?\n\n"
+        "<b>1</b> — без распределения по листам, все участники видят один и тот же набор стимулов.\n"
+        "<b>≥ 2</b> — респонденты делятся между листами поровну, каждый видит только свой лист.\n\n"
+        f"<b>Сейчас:</b> {current}\n\n"
+        "Введите целое число от 1 до 20.",
+        kb,
+        state=state,
+    )
+    await state.update_data(waiting_lists_count=True)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_demographics")
@@ -864,6 +903,31 @@ async def on_likert_reset(callback: types.CallbackQuery, state: FSMContext):
 
 # ── редактирование инструкций фаз ──
 
+def _template_has_buttons(tmpl_code: str) -> bool:
+    """есть ли в шаблоне хоть одна фаза с response_type="buttons".
+
+    Используем для скрытия кнопочно-специфичных опций в конфиге
+    (например, рандомизации позиций кнопок) для шаблонов с
+    open_text/voice/likert.
+    """
+    tmpl = tmpl_registry.get_template(tmpl_code) or {}
+    build_fn = tmpl.get("build_phase")
+    phases_info = tmpl.get("phases_info") or ["Основная фаза"]
+    if not build_fn:
+        # free_form и т.п. — на всякий случай показываем опцию
+        return True
+    for i in range(len(phases_info)):
+        try:
+            phase = build_fn([], {}, i) or {}
+            if phase.get("response_type") == "buttons":
+                return True
+        except Exception:
+            # если шаблон не может построить фазу без trials — допускаем,
+            # что кнопки могут быть, не прячем опцию
+            return True
+    return False
+
+
 def _get_default_instruction(tmpl_code: str, phase_index: int) -> str:
     """получить дефолтную инструкцию для фазы, вызвав build_phase с пустыми trials"""
     tmpl = tmpl_registry.get_template(tmpl_code) or {}
@@ -931,6 +995,16 @@ async def _send_instructions_submenu(message: types.Message, state: FSMContext):
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_instructions")
 async def on_cfg_instructions(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    # сбрасываем waiting-флаги — в т.ч. на случай возврата по кнопке «Отмена»
+    # из режима редактирования инструкции, чтобы следующий ввод не залетел
+    # как недозавершённый
+    await state.update_data(
+        waiting_button_edit=None,
+        waiting_likert_edit=None,
+        waiting_instruction_edit=None,
+        waiting_description_edit=False,
+        waiting_timeout=False,
+    )
     await _show_instructions_submenu(callback, state)
 
 
@@ -942,12 +1016,15 @@ async def on_instruction_edit(callback: types.CallbackQuery, state: FSMContext):
     tmpl_code = data.get("template_type", "")
     current = _get_current_instruction(data, tmpl_code, phase_idx)
     await state.update_data(waiting_instruction_edit={"phase_index": phase_idx})
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cfg_instructions")],
+    ])
     await _render_screen(
         callback,
         f"Введите новую инструкцию для фазы {phase_idx + 1}.\n\n"
         f"<b>Сейчас:</b>\n{current}\n\n"
-        f"Отправьте «-» чтобы сбросить к дефолту шаблона.\n"
-        f"/cancel — отмена.",
+        f"Отправьте «-» чтобы сбросить к дефолту шаблона.",
+        kb,
         state=state,
     )
 
@@ -968,13 +1045,16 @@ async def on_cfg_description(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     current = data.get("description", "") or "<i>(пусто)</i>"
     await state.update_data(waiting_description_edit=True)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cfg_back")],
+    ])
     await _render_screen(
         callback,
         "Введите <b>приветственное сообщение</b>. Его увидит респондент, "
         "когда перейдёт по ссылке на эксперимент — до инструкций и "
         "стимулов.\n\n"
-        f"<b>Сейчас:</b>\n{current}\n\n"
-        "/cancel — отмена.",
+        f"<b>Сейчас:</b>\n{current}",
+        kb,
         state=state,
     )
 
@@ -1009,6 +1089,32 @@ async def on_config_text(message: types.Message, state: FSMContext):
         except ValueError:
             await message.answer("Введите целое число.")
             return
+        await show_config_menu(message, state)
+        return
+
+    # количество листов
+    if data.get("waiting_lists_count"):
+        try:
+            val = int(text)
+        except ValueError:
+            await message.answer("Введите целое число.")
+            return
+        if val < 1 or val > 20:
+            await message.answer("Число листов должно быть от 1 до 20.")
+            return
+        # удаляем CSV-слоты, которые перестали существовать при новом lists_count
+        csv_data = dict(data.get("csv_data") or {})
+        pruned = {
+            k: v for k, v in csv_data.items()
+            if (k.split("_") + ["", ""])[1].isdigit()
+            and 1 <= int(k.split("_")[1]) <= val
+        }
+        await state.update_data(
+            lists_count=val,
+            use_lists=val >= 2,
+            csv_data=pruned,
+            waiting_lists_count=False,
+        )
         await show_config_menu(message, state)
         return
 
@@ -1100,48 +1206,119 @@ async def on_config_text(message: types.Message, state: FSMContext):
 
 # ── загрузка CSV (по фазам и листам) ──
 
-@router.callback_query(CreateExperiment.configuring, F.data == "cfg_upload_csv")
-async def ask_csv(callback: types.CallbackQuery, state: FSMContext):
-    """начало загрузки CSV: определяем сколько фаз и листов нужно"""
-    await callback.answer()
-    data = await state.get_data()
+def _csv_template_phases(data: dict) -> list[str]:
+    """вернуть список фаз шаблона для текущего эксперимента."""
     template_type = data.get("template_type", "free_form")
-    use_lists = data.get("use_lists", False)
-
-    # определяем список фаз из шаблона
     tmpl_info = tmpl_registry.get_template(template_type)
     phases_info = ["Основная фаза"]
     if tmpl_info:
-        phases_info = tmpl_info.get("phases_info", ["Основная фаза"])
+        phases_info = tmpl_info.get("phases_info", ["Основная фаза"]) or ["Основная фаза"]
+    return phases_info
 
-    # при редактировании черновика сохраняем ранее загруженные CSV:
-    # пользователь может перезагрузить только нужные фазы/листы,
-    # остальные останутся как были.
-    existing_csv = data.get("csv_data", {}) if data.get("editing_id") else {}
+
+def _build_csv_manifest(data: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """собрать текст и клавиатуру manifest-меню CSV.
+
+    Каждая (фаза × лист) — отдельная кнопка с галочкой, если файл уже
+    загружен. Все рендеры через _render_screen, поэтому StaleMenuGuard
+    не блокирует клики.
+    """
+    phases_info = _csv_template_phases(data)
+    lists_count = max(int(data.get("lists_count", 1) or 1), 1)
+    csv_data = data.get("csv_data") or {}
+
+    lines = ["<b>Загрузка CSV</b>", ""]
+    if lists_count > 1 and len(phases_info) > 1:
+        lines.append(f"Фаз: {len(phases_info)}, листов: {lists_count}.")
+    elif lists_count > 1:
+        lines.append(f"Листов: {lists_count}.")
+    elif len(phases_info) > 1:
+        lines.append(f"Фаз: {len(phases_info)}.")
+    lines.append("Нажмите на слот, чтобы загрузить или заменить файл.")
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    total = 0
+    done = 0
+    for ph in range(1, len(phases_info) + 1):
+        for lst in range(1, lists_count + 1):
+            total += 1
+            key = f"{ph}_{lst}"
+            uploaded = key in csv_data
+            if uploaded:
+                done += 1
+            mark = "✅" if uploaded else "⬜"
+            phase_name = phases_info[ph - 1]
+            if lists_count > 1 and len(phases_info) > 1:
+                label = f"{mark} Фаза {ph} · лист {lst}"
+            elif lists_count > 1:
+                label = f"{mark} Лист {lst}"
+            elif len(phases_info) > 1:
+                label = f"{mark} Фаза {ph} ({phase_name})"
+            else:
+                label = f"{mark} CSV-файл"
+            if uploaded:
+                label += f" — {len(csv_data[key])}"
+            buttons.append([InlineKeyboardButton(
+                text=label, callback_data=f"csv_slot_{ph}_{lst}",
+            )])
+
+    lines.append("")
+    lines.append(f"Загружено: {done}/{total}")
+
+    buttons.append([InlineKeyboardButton(
+        text="✅ Готово", callback_data="csv_done",
+    )])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _show_csv_manifest(target, state: FSMContext):
+    """показать manifest-меню (target — CallbackQuery или Message)."""
+    data = await state.get_data()
+    text, kb = _build_csv_manifest(data)
+    await _render_screen(target, text, kb, state=state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_upload_csv")
+async def ask_csv(callback: types.CallbackQuery, state: FSMContext):
+    """вход в загрузку CSV: показываем manifest со всеми слотами."""
+    await callback.answer()
+    data = await state.get_data()
+    phases_info = _csv_template_phases(data)
+    lists_count = max(int(data.get("lists_count", 1) or 1), 1)
+
+    # подчищаем csv_data от слотов вне текущей размерности
+    # (могло остаться после уменьшения lists_count)
+    csv_data = dict(data.get("csv_data") or {})
+    valid = {f"{ph}_{lst}"
+             for ph in range(1, len(phases_info) + 1)
+             for lst in range(1, lists_count + 1)}
+    csv_data = {k: v for k, v in csv_data.items() if k in valid}
+
     await state.update_data(
         phases_info=phases_info,
-        current_phase_num=1,
-        current_list="1",
-        # хранилище: {(phase_num, list_id): [trials]}
-        csv_data=existing_csv,
+        csv_data=csv_data,
+        current_phase_num=None,
+        current_list=None,
     )
-
-    phase_name = phases_info[0]
-    if use_lists:
-        prompt = f"Отправьте CSV для фазы 1 ({phase_name}), лист 1."
-    else:
-        if len(phases_info) > 1:
-            prompt = f"Отправьте CSV для фазы 1 ({phase_name})."
-        else:
-            prompt = "Отправьте CSV-файл со стимулами."
-
-    await _render_screen(callback, prompt + "\n\n/cancel — отмена.", state=state)
     await state.set_state(CreateExperiment.uploading_csv)
+    await _show_csv_manifest(callback, state)
 
 
 @router.message(CreateExperiment.uploading_csv, F.document)
 async def on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
     """обработка загруженного CSV-файла"""
+    data = await state.get_data()
+    current_phase_num = data.get("current_phase_num")
+    current_list = data.get("current_list")
+    if not current_phase_num or not current_list:
+        # пользователь прислал файл, не выбрав слот в manifest
+        await message.answer(
+            "Сначала выберите слот в меню — нажмите на нужную фазу/лист, "
+            "и потом отправьте файл."
+        )
+        await _show_csv_manifest(message, state)
+        return
+
     doc = message.document
     if not doc.file_name.lower().endswith(".csv"):
         await message.answer("Пожалуйста, отправьте файл в формате CSV.")
@@ -1160,10 +1337,7 @@ async def on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
         await message.answer("CSV-файл пуст.")
         return
 
-    data = await state.get_data()
     template_type = data.get("template_type", "free_form")
-    current_phase_num = data.get("current_phase_num", 1)
-    current_list = data.get("current_list", "1")
 
     # валидация и маппинг (с учетом phase_csv_mappings для многофазных шаблонов)
     tmpl_info = tmpl_registry.get_template(template_type)
@@ -1226,103 +1400,73 @@ async def on_csv_uploaded(message: types.Message, state: FSMContext, bot: Bot):
     phase_name = phases_info[current_phase_num - 1] if current_phase_num <= len(phases_info) else f"Фаза {current_phase_num}"
 
     await message.answer(
-        f"Загружено {count} строк для фазы {current_phase_num} ({phase_name}), лист {current_list}.\n"
-        f"Колонки: {', '.join(columns)}"
+        f"✅ Загружено {count} строк для фазы {current_phase_num} ({phase_name})"
+        + (f", лист {current_list}" if int(data.get("lists_count", 1) or 1) > 1 else "")
+        + f".\nКолонки: {', '.join(columns)}"
     )
 
-    # предлагаем следующий шаг
-    await ask_next_csv_step(message, state)
+    # сбрасываем «активный» слот и возвращаемся в manifest
+    await state.update_data(current_phase_num=None, current_list=None)
+    await _show_csv_manifest(message, state)
 
 
-async def ask_next_csv_step(message, state: FSMContext):
-    """определить, что загружать дальше: следующий лист или следующую фазу"""
-    data = await state.get_data()
-    use_lists = data.get("use_lists", False)
-    current_phase_num = data.get("current_phase_num", 1)
-    current_list = data.get("current_list", "1")
-    phases_info = data.get("phases_info", ["Основная фаза"])
-
-    buttons = []
-
-    # предложить следующий лист (внутри текущей фазы)
-    if use_lists:
-        next_list = str(int(current_list) + 1)
-        buttons.append([InlineKeyboardButton(
-            text=f"Загрузить лист {next_list} (фаза {current_phase_num})",
-            callback_data=f"csv_next_list_{next_list}",
-        )])
-
-    # предложить следующую фазу
-    if current_phase_num < len(phases_info):
-        next_phase = current_phase_num + 1
-        next_name = phases_info[next_phase - 1]
-        buttons.append([InlineKeyboardButton(
-            text=f"Перейти к фазе {next_phase} ({next_name})",
-            callback_data=f"csv_next_phase_{next_phase}",
-        )])
-
-    buttons.append([InlineKeyboardButton(text="✅ Готово", callback_data="csv_done")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Что загрузить дальше?", reply_markup=kb)
-
-
-@router.callback_query(CreateExperiment.uploading_csv, F.data.startswith("csv_next_list_"))
-async def on_next_list(callback: types.CallbackQuery, state: FSMContext):
+@router.callback_query(CreateExperiment.uploading_csv, F.data.startswith("csv_slot_"))
+async def on_csv_slot(callback: types.CallbackQuery, state: FSMContext):
+    """клик по слоту в manifest — спрашиваем файл для этой (фаза, лист)."""
     await callback.answer()
-    next_list = callback.data.replace("csv_next_list_", "")
+    parts = callback.data.replace("csv_slot_", "").split("_")
+    try:
+        ph, lst = int(parts[0]), int(parts[1])
+    except (ValueError, IndexError):
+        await _show_csv_manifest(callback, state)
+        return
+
     data = await state.get_data()
-    current_phase_num = data.get("current_phase_num", 1)
-    phases_info = data.get("phases_info", ["Основная фаза"])
-    phase_name = phases_info[current_phase_num - 1] if current_phase_num <= len(phases_info) else f"Фаза {current_phase_num}"
+    phases_info = _csv_template_phases(data)
+    lists_count = max(int(data.get("lists_count", 1) or 1), 1)
+    phase_name = phases_info[ph - 1] if 1 <= ph <= len(phases_info) else f"Фаза {ph}"
 
-    await state.update_data(current_list=next_list)
-    await _render_screen(
-        callback,
-        f"Отправьте CSV для фазы {current_phase_num} ({phase_name}), лист {next_list}.",
-        state=state,
-    )
+    await state.update_data(current_phase_num=ph, current_list=str(lst))
 
-
-@router.callback_query(CreateExperiment.uploading_csv, F.data.startswith("csv_next_phase_"))
-async def on_next_phase(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    next_phase = int(callback.data.replace("csv_next_phase_", ""))
-    data = await state.get_data()
-    use_lists = data.get("use_lists", False)
-    phases_info = data.get("phases_info", ["Основная фаза"])
-    phase_name = phases_info[next_phase - 1] if next_phase <= len(phases_info) else f"Фаза {next_phase}"
-
-    await state.update_data(current_phase_num=next_phase, current_list="1")
-    if use_lists:
-        await _render_screen(
-            callback,
-            f"Отправьте CSV для фазы {next_phase} ({phase_name}), лист 1.",
-            state=state,
-        )
+    if lists_count > 1 and len(phases_info) > 1:
+        prompt = f"Отправьте CSV для фазы {ph} ({phase_name}), лист {lst}."
+    elif lists_count > 1:
+        prompt = f"Отправьте CSV для листа {lst}."
+    elif len(phases_info) > 1:
+        prompt = f"Отправьте CSV для фазы {ph} ({phase_name})."
     else:
-        await _render_screen(
-            callback,
-            f"Отправьте CSV для фазы {next_phase} ({phase_name}).",
-            state=state,
+        prompt = "Отправьте CSV-файл со стимулами."
+
+    csv_data = data.get("csv_data") or {}
+    key = f"{ph}_{lst}"
+    if key in csv_data:
+        prompt += (
+            f"\n\n<i>В этом слоте уже загружено {len(csv_data[key])} строк. "
+            "Если отправите новый файл — он заменит текущий.</i>"
         )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="csv_back_to_manifest")],
+    ])
+    await _render_screen(callback, prompt, kb, state=state)
+
+
+@router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_back_to_manifest")
+async def on_csv_back_to_manifest(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.update_data(current_phase_num=None, current_list=None)
+    await _show_csv_manifest(callback, state)
 
 
 @router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_done")
 async def on_csv_done(callback: types.CallbackQuery, state: FSMContext):
+    """выйти из manifest CSV в основное меню настроек.
+
+    lists_count теперь хранится явной настройкой; ничего не пересчитываем.
+    Полнота загрузки проверяется validate_experiment при активации.
+    """
     await callback.answer()
-    data = await state.get_data()
-    csv_data = data.get("csv_data", {})
-
-    # подсчитываем количество уникальных листов
-    list_ids = set()
-    for key in csv_data:
-        parts = key.split("_")
-        if len(parts) == 2:
-            list_ids.add(parts[1])
-    lists_count = len(list_ids) if list_ids else 1
-
-    await state.update_data(lists_count=lists_count)
+    await state.update_data(current_phase_num=None, current_list=None)
     await show_config_menu(callback, state)
 
 
@@ -1393,13 +1537,9 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
     # режим редактирования — делаем update, не создаём новый
     editing_id = data.get("editing_id")
 
-    # актуализируем lists_count по реально загруженным CSV
-    all_list_ids = set()
-    for key in csv_data:
-        parts = key.split("_")
-        if len(parts) == 2:
-            all_list_ids.add(parts[1])
-    lists_count = max(len(all_list_ids), 1)
+    # lists_count теперь хранится явной настройкой; use_lists — производная
+    lists_count = max(int(data.get("lists_count", 1) or 1), 1)
+    use_lists = lists_count >= 2
 
     # поля, которые меняются и при create, и при update
     mutable_fields = {
@@ -1410,7 +1550,7 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "randomize_trials": data.get("randomize", False),
         "randomize_button_positions": data.get("randomize_button_positions", False),
         "delete_previous_trials": data.get("delete_previous_trials", True),
-        "use_lists": data.get("use_lists", False),
+        "use_lists": use_lists,
         "lists_count": lists_count,
         "time_limit": data.get("time_limit"),
         "collect_demographics": data.get("demographics_mode", "off") != "off",
@@ -1478,14 +1618,26 @@ async def show_experiment_detail(
     status_text = {"draft": "Черновик", "active": "Активен", "archived": "Архив"}
     phases_count = len(exp.get("phases", []))
     trials_count = sum(len(p.get("trials", [])) for p in exp.get("phases", []))
+    lists_count = max(int(exp.get("lists_count", 1) or 1), 1)
+    # при распределении по листам каждый респондент видит только свой лист —
+    # покажем и общий объём, и сколько достанется одному участнику
+    per_participant = trials_count // lists_count if lists_count > 1 else trials_count
 
     head = f"{banner}\n\n" if banner else ""
+    summary_parts = [f"Фаз: {phases_count}"]
+    if lists_count > 1:
+        summary_parts.append(f"листов: {lists_count}")
+        summary_parts.append(f"всего проб: {trials_count}")
+        summary_parts.append(f"на участника: {per_participant}")
+    else:
+        summary_parts.append(f"проб: {trials_count}")
+
     text = (
         f"{head}"
         f"<b>{exp['title']}</b>\n\n"
         f"Статус: {status_text.get(exp['status'], exp['status'])}\n"
         f"Шаблон: {exp['template_type']}\n"
-        f"Фаз: {phases_count}, проб: {trials_count}\n"
+        f"{', '.join(summary_parts)}\n"
     )
 
     if exp["status"] == "active":
@@ -1496,7 +1648,13 @@ async def show_experiment_detail(
             link = f"https://t.me/{bot_me.username}?start={exp['deep_link_id']}"
         except Exception:
             link = f"(deep_link_id: {exp['deep_link_id']})"
-        text += f"\nСсылка для участников: {link}"
+        # оборачиваем в <code> — нажатие в Telegram копирует текст,
+        # и URL не превращается в кликабельную ссылку, поэтому сам
+        # экспериментатор не уйдёт по ней в участники
+        text += (
+            f"\nСсылка для участников (нажмите, чтобы скопировать):\n"
+            f"<code>{link}</code>"
+        )
 
     buttons = []
     if exp["status"] == "draft":
@@ -1612,16 +1770,19 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
         randomize=exp.get("randomize_trials", False),
         randomize_button_positions=exp.get("randomize_button_positions", False),
         delete_previous_trials=exp.get("delete_previous_trials", True),
-        use_lists=exp.get("use_lists", False),
         demographics_mode=demo_mode,
         demographics_custom=exp.get("demographics_custom", []),
         time_limit=exp.get("time_limit"),
         allow_repeat=exp.get("allow_repeat", False),
         phases_info=phases_info,
-        current_phase_num=1,
-        current_list="1",
+        current_phase_num=None,
+        current_list=None,
         csv_data=csv_data,
-        lists_count=exp.get("lists_count", 1),
+        # нормализация: при противоречивых старых данных доверяем lists_count
+        lists_count=max(
+            int(exp.get("lists_count", 1) or 1),
+            2 if exp.get("use_lists") else 1,
+        ),
         custom_buttons=exp.get("custom_buttons") or {},
         custom_likert=exp.get("custom_likert") or {},
         custom_instructions=exp.get("custom_instructions") or {},
@@ -1974,15 +2135,18 @@ async def on_results(callback: types.CallbackQuery, state: FSMContext):
         f"В процессе: {in_progress}\n"
     )
 
-    # распределение по листам
-    list_counts = {}
-    for s in real_sessions:
-        lst = s.get("assigned_list", "—")
-        list_counts[lst] = list_counts.get(lst, 0) + 1
-    if list_counts:
-        text += "\nПо листам:\n"
-        for lst, cnt in sorted(list_counts.items()):
-            text += f"  Лист {lst}: {cnt}\n"
+    # распределение по листам — только если эксперимент реально использует листы
+    experiment = await repo.get_experiment(exp_id)
+    lists_count = max(int((experiment or {}).get("lists_count", 1) or 1), 1)
+    if lists_count > 1:
+        list_counts: dict = {}
+        for s in real_sessions:
+            lst = s.get("assigned_list") or "—"
+            list_counts[lst] = list_counts.get(lst, 0) + 1
+        if list_counts:
+            text += "\nПо листам:\n"
+            for lst, cnt in sorted(list_counts.items(), key=lambda kv: str(kv[0])):
+                text += f"  Лист {lst}: {cnt}\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Экспорт CSV", callback_data=f"export_{exp_id}")],

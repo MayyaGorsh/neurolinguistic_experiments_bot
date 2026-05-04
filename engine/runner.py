@@ -185,9 +185,14 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             bot.id, chat_id, chat_id, msg.message_id,
         )
 
-    # запускаем тайм-аут, если задан
+    # запускаем тайм-аут, если задан — для любого интерактивного типа ответа.
+    # handle_timeout одинаково корректно сохраняет «пропуск» и для buttons,
+    # и для open_text/voice/likert/multiple_choice; process_answer отменяет
+    # таймер, если респондент успел ответить.
     time_limit = phase.get("time_limit") or experiment.get("time_limit")
-    if time_limit and response_type == "buttons":
+    if time_limit and response_type in (
+        "buttons", "open_text", "voice", "likert", "multiple_choice",
+    ):
         cancel_timeout(session_id)
         task = asyncio.create_task(
             handle_timeout(bot, chat_id, session, experiment, time_limit, msg.message_id)
@@ -325,10 +330,11 @@ async def process_answer(
     # отменяем тайм-аут
     cancel_timeout(session_id)
 
-    # считаем RT для кнопок
+    # считаем RT для всех интерактивных типов — для open_text/voice это
+    # тоже полезно (когда задан тайм-аут или просто для анализа задержки)
     rt_ms = None
     response_type = phase.get("response_type", "buttons")
-    if response_type in ("buttons", "likert", "multiple_choice"):
+    if response_type in ("buttons", "likert", "multiple_choice", "open_text", "voice"):
         shown_at = _stimulus_shown_at.pop(session_id, None)
         if shown_at:
             rt_ms = int((time.time() - shown_at) * 1000)
@@ -411,7 +417,7 @@ async def handle_timeout(
     }
     await repo.save_answer(answer_data)
 
-    timeout_msg = await bot.send_message(chat_id, "Время вышло.")
+    timeout_msg = await bot.send_message(chat_id, "Время вышло")
 
     # обновляем сессию и идем дальше; если включена очистка — добавляем
     # «Время вышло» к списку transient, чтобы следующий present_trial

@@ -68,12 +68,15 @@ async def cmd_start_deep_link(message: types.Message, command: CommandObject, bo
             await message.answer("Вы уже проходили этот эксперимент. Повторное прохождение не предусмотрено.")
             return
 
-    # показываем приветствие
-    text = (
-        f"<b>{experiment['title']}</b>\n\n"
-        f"{experiment.get('description', '')}\n\n"
-        "Нажмите «Начать», чтобы приступить."
-    )
+    # показываем приветствие. Название эксперимента респонденту не
+    # показываем — оно служебное (для исследователя в списке экспериментов
+    # и в экспорте). Если задано приветственное сообщение (description) —
+    # показываем его; иначе нейтральная заглушка.
+    description = (experiment.get("description") or "").strip()
+    if description:
+        text = f"{description}\n\nНажмите «Начать», чтобы приступить."
+    else:
+        text = "Нажмите «Начать», чтобы приступить."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Начать", callback_data=f"begin_{exp_id}")]
     ])
