@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     BufferedInputFile,
     FSInputFile,
+    InputMediaDocument,
 )
 
 from db import repositories as repo
@@ -88,6 +89,21 @@ def _ajt_has_stimulus2(data: dict) -> bool:
         for t in (trials or []):
             aux = t.get("auxiliary") or {}
             if aux.get("stimulus2"):
+                return True
+    return False
+
+
+def _ajt_csv_has_response_options(data: dict) -> bool:
+    """в загруженном CSV у проб есть непустые response_options (opt1..optN).
+
+    нужно для управления кнопкой «📊 Шкала ответа»: для AJT эта настройка
+    влияет только в режиме «опций нет — числовая Likert». если CSV уже
+    загружен с явными подписями кнопок, Likert-конфиг просто игнорируется,
+    и кнопку лучше скрыть, чтобы не сбивать с толку."""
+    csv_data = data.get("csv_data") or {}
+    for trials in csv_data.values():
+        for t in (trials or []):
+            if t.get("response_options"):
                 return True
     return False
 
@@ -273,7 +289,15 @@ async def show_config_menu(message_or_cb, state: FSMContext):
             buttons.append([InlineKeyboardButton(
                 text="🔤 Кнопки ответа", callback_data="cfg_buttons",
             )])
-        if has_likert:
+        # для AJT шкала ответа применяется только когда в CSV нет колонок
+        # opt1..optN: тогда build_acceptability падает в числовую Likert.
+        # если CSV уже загружен с явными подписями — настройка игнорируется,
+        # кнопку прячем, чтобы исследователь не возился с ней зря.
+        hide_likert_btn = (
+            tmpl == "acceptability_judgment"
+            and _ajt_csv_has_response_options(data)
+        )
+        if has_likert and not hide_likert_btn:
             buttons.append([InlineKeyboardButton(
                 text="📊 Шкала ответа", callback_data="cfg_likert",
             )])
@@ -1564,17 +1588,24 @@ async def on_csv_example(callback: types.CallbackQuery, state: FSMContext, bot: 
         "Пример заполнения CSV для этой фазы. Скачайте, "
         "адаптируйте под свой материал и загрузите обратно."
     )
-    for i, path in enumerate(paths):
-        # caption кладём только на первое сообщение, иначе он повторяется
-        # на каждом документе и засоряет чат
+    # сначала отдельным сообщением — пояснение, потом сами файлы.
+    # если файлов больше одного — шлём их альбомом (одним «бабблом»),
+    # иначе одиночным send_document. так пользователь видит сначала
+    # инструкцию, а потом компактную пачку CSV под ней.
+    await callback.message.answer(caption)
+    if len(paths) == 1:
         await bot.send_document(
             callback.from_user.id,
-            FSInputFile(
-                path,
-                filename=f"{os.path.basename(path)}",
-            ),
-            caption=caption if i == 0 else None,
+            FSInputFile(paths[0], filename=os.path.basename(paths[0])),
         )
+    else:
+        media = [
+            InputMediaDocument(
+                media=FSInputFile(p, filename=os.path.basename(p)),
+            )
+            for p in paths
+        ]
+        await bot.send_media_group(callback.from_user.id, media=media)
 
 
 @router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_back_to_manifest")

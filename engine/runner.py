@@ -216,9 +216,14 @@ def _ajt_two_ratings_text(stim_content: str, rating_idx: int) -> str:
     return f"{stim_content}\n\n<b>Оцените {label}</b>"
 
 
-# длина одной метки, сверх которой кнопка занимает свой ряд целиком
-# (при бо́льшей длине рядом с ней не помещается соседняя без переноса).
-_BUTTON_LABEL_MAX_INLINE = 25
+# «бюджет» одного ряда инлайн-клавиатуры в символах при равной ширине
+# кнопок. на мобиле Telegram даёт каждому ряду примерно одинаковую
+# ширину (≈ ширина бабла со стимулом); если max_label × n_in_row
+# не влезает в бюджет — подпись режется на «...».
+# подбираем количество кнопок в ряду от длины самой длинной подписи,
+# а не хардкодим порог: yes-no «Да/Нет» помещается по 3, а Likert-метки
+# вроде «Совсем неприемлемо» (18 симв.) автоматически уходят по одной.
+_ROW_CHAR_BUDGET = 24
 
 
 def _layout_button_rows(items: list) -> list:
@@ -251,19 +256,29 @@ def _layout_button_rows(items: list) -> list:
 
 
 def _layout_buttons(options: list, callback_prefix: str) -> list:
-    """собрать ряды InlineKeyboardButton по эвристике layout-а."""
+    """собрать ряды InlineKeyboardButton по эвристике layout-а.
+
+    выбираем количество кнопок в ряду из «бюджета» символов на ряд:
+    fit = budget // max_label. при fit ≥ 3 уходим в стандартный
+    _layout_button_rows (3+2, 3+3 и т.п.); при fit == 2 — пары;
+    при fit == 1 — каждая на своей строке. так короткие подписи не
+    раскидываются по столбику без нужды, а длинные не режутся."""
     keys = [
         InlineKeyboardButton(
             text=opt, callback_data=f"{callback_prefix}_{i}",
         )
         for i, opt in enumerate(options)
     ]
-    # если хотя бы одна метка длинная — все кнопки в свои ряды,
-    # иначе текст в кнопке начнёт переноситься и выглядеть некрасиво.
+    n = len(keys)
     max_len = max((len(opt) for opt in options), default=0)
-    if max_len > _BUTTON_LABEL_MAX_INLINE:
-        return [[k] for k in keys]
-    return _layout_button_rows(keys)
+    if max_len == 0:
+        return _layout_button_rows(keys)
+    fit_per_row = max(1, _ROW_CHAR_BUDGET // max_len)
+    if fit_per_row >= 3:
+        return _layout_button_rows(keys)
+    if fit_per_row == 2:
+        return [keys[i:i + 2] for i in range(0, n, 2)]
+    return [[k] for k in keys]
 
 
 def build_response_keyboard(
