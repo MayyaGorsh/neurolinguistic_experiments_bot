@@ -72,6 +72,17 @@ async def on_begin_experiment(callback: types.CallbackQuery, bot: Bot):
         session_data["assigned_list"] = best_list
 
     session_id = await repo.create_session(session_data)
+    # закрываем все остальные брошенные сессии пользователя — иначе текст/
+    # голос может уйти в чужую сессию (см. find_active_session) и
+    # pending_judgment из старой сессии заблокирует кликнутую кнопку.
+    abandoned = await repo.abandon_other_active_sessions(
+        callback.from_user.id, keep_session_id=session_id,
+    )
+    if abandoned:
+        logger.info(
+            "закрыто %s старых сессий пользователя %s при старте новой",
+            abandoned, callback.from_user.id,
+        )
     logger.info(
         "сессия %s: user=%s, exp=%s, list=%s",
         session_id, callback.from_user.id, experiment_id,
@@ -202,6 +213,14 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
         )
         return
 
+    # для buttons_then_text после первого клика бот ждёт обоснование текстом —
+    # повторные клики по той же кнопке игнорируем, чтобы не перезаписать выбор.
+    if session.get("pending_judgment"):
+        await callback.answer(
+            "Напишите обоснование ответа сообщением.", show_alert=True,
+        )
+        return
+
     await callback.answer()
 
     experiment = await repo.get_experiment(session["experiment_id"])
@@ -237,6 +256,7 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
     await runner.process_answer(
         bot, callback.from_user.id, session, exp_copy,
         raw_response, option_index,
+        message_id=callback.message.message_id,
     )
 
 
@@ -348,8 +368,14 @@ async def on_text_answer(message: types.Message, bot: Bot):
     phase = prepared[session["current_phase"]]
     response_type = phase.get("response_type", "buttons")
 
-    if response_type not in ("open_text", "voice"):
+    if response_type not in ("open_text", "voice", "buttons_then_text"):
         await message.answer("Пожалуйста, используйте кнопки для ответа.")
+        return
+
+    # для buttons_then_text текст имеет смысл только после клика по кнопке —
+    # до этого ждём выбор «правильно/неправильно».
+    if response_type == "buttons_then_text" and not session.get("pending_judgment"):
+        await message.answer("Сначала выберите вариант кнопкой.")
         return
 
     await runner.process_answer(
@@ -392,9 +418,10 @@ async def on_voice_answer(message: types.Message, bot: Bot):
 # ── вспомогательные ──
 
 async def find_active_session(telegram_id: int):
-    """найти любую незавершенную сессию пользователя"""
-    from db.connection import sessions_col
-    return await sessions_col.find_one({
-        "telegram_id": telegram_id,
-        "status": {"$in": ["started", "in_progress"]},
-    })
+    """найти самую свежую незавершенную сессию пользователя.
+
+    раньше брали find_one без сортировки и ловили баг: если у пользователя
+    остались брошенные in_progress сессии от прошлых экспериментов, текст/
+    голос мог уйти в любую из них, и process_answer показывал стимул из
+    «не того» эксперимента. сейчас явно берём самую свежую."""
+    return await repo.get_latest_active_session(telegram_id)

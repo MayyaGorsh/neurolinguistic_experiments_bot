@@ -47,6 +47,41 @@ def get_example_csv_path(code: str, phase: int = 1) -> str | None:
     return path if os.path.isfile(path) else None
 
 
+def get_example_csv_paths(code: str, phase: int = 1) -> list[str]:
+    """все csv-примеры для шаблона/фазы.
+
+    помимо «обычного» <code>.csv шаблон может зарегистрировать
+    дополнительные файлы через поле `extra_examples` (для тех шаблонов,
+    где разные настройки требуют разных примеров — напр. Acceptability
+    Judgment с одиночной vs совместной подачей). порядок списка
+    стабильный: основной пример первым, потом дополнительные.
+    """
+    paths: list[str] = []
+    main = get_example_csv_path(code, phase)
+    if main:
+        paths.append(main)
+    info = _TEMPLATES.get(code) or {}
+    extras = info.get("extra_examples") or []
+    if phase >= 2:
+        extras = info.get(f"extra_examples_phase{phase}") or extras
+    for name in extras:
+        path = os.path.join(_EXAMPLES_DIR, name)
+        if os.path.isfile(path) and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def get_example_caption(code: str) -> str | None:
+    """пользовательский комментарий, который шлётся вместе с примером CSV.
+
+    шаблон может задать его через поле `example_caption` в register(...).
+    если не задан — caller использует общий дефолтный текст.
+    """
+    info = _TEMPLATES.get(code) or {}
+    cap = info.get("example_caption")
+    return cap if isinstance(cap, str) and cap.strip() else None
+
+
 def get_response_options(config: dict, defaults: list, key: str = "main") -> list:
     """вернуть пользовательские метки кнопок, если их длина совпадает с дефолтом.
     сохраняет позиционное соответствие: options[0] = та же «роль», что defaults[0]."""

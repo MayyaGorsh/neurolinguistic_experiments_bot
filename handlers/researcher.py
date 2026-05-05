@@ -4,6 +4,7 @@
 """
 
 import logging
+import os
 import secrets
 
 from aiogram import Router, Bot, types, F
@@ -65,6 +66,30 @@ TEMPLATE_LIST = [
     ("video_task", "Video task"),
     ("free_form", "Свободный формат"),
 ]
+
+
+# ── AJT-специфичные хелперы ──
+
+_AJT_PRESENTATION_LABELS = {
+    "single": "одиночная",
+    "joint_one_rating": "совместная (одна оценка)",
+    "joint_two_ratings": "совместная (две оценки)",
+}
+_AJT_PRESENTATION_CYCLE = ["single", "joint_one_rating", "joint_two_ratings"]
+
+
+def _ajt_has_stimulus2(data: dict) -> bool:
+    """в загруженном CSV (state.csv_data) есть непустая колонка stimulus2.
+
+    тоггл «режим подачи» имеет смысл только когда в данных реально есть
+    второе предложение, иначе joint-режимы вырождаются в single."""
+    csv_data = data.get("csv_data") or {}
+    for trials in csv_data.values():
+        for t in (trials or []):
+            aux = t.get("auxiliary") or {}
+            if aux.get("stimulus2"):
+                return True
+    return False
 
 
 # ── создание эксперимента ──
@@ -158,6 +183,13 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     }.get(demo_mode, "нет")
 
     has_buttons = _template_has_buttons(tmpl)
+    ajt_show_presentation = (
+        tmpl == "acceptability_judgment" and _ajt_has_stimulus2(data)
+    )
+    presentation_mode = data.get("presentation_mode", "single")
+    presentation_label = _AJT_PRESENTATION_LABELS.get(
+        presentation_mode, presentation_mode,
+    )
 
     text_parts = [
         f"<b>Настройки эксперимента</b>\n",
@@ -168,6 +200,8 @@ async def show_config_menu(message_or_cb, state: FSMContext):
         text_parts.append(
             f"Рандомизация позиций кнопок: {'да' if randomize_buttons else 'нет'}"
         )
+    if ajt_show_presentation:
+        text_parts.append(f"Режим подачи: {presentation_label}")
     text_parts += [
         f"Чистить предыдущие пробы: {'да' if delete_previous else 'нет'}",
         f"Листы: {lists_label}",
@@ -187,6 +221,11 @@ async def show_config_menu(message_or_cb, state: FSMContext):
         buttons.append([InlineKeyboardButton(
             text=f"{'✅' if randomize_buttons else '❌'} Рандомизация позиций кнопок",
             callback_data="cfg_randomize_buttons",
+        )])
+    if ajt_show_presentation:
+        buttons.append([InlineKeyboardButton(
+            text=f"🎯 Режим подачи: {presentation_label}",
+            callback_data="cfg_presentation_mode",
         )])
     buttons += [
         [InlineKeyboardButton(
@@ -417,6 +456,21 @@ async def toggle_randomize_buttons(callback: types.CallbackQuery, state: FSMCont
     await state.update_data(
         randomize_button_positions=not data.get("randomize_button_positions", False)
     )
+    await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_presentation_mode")
+async def toggle_presentation_mode(callback: types.CallbackQuery, state: FSMContext):
+    """переключение AJT режима подачи: single → joint_one → joint_two → ..."""
+    await callback.answer()
+    data = await state.get_data()
+    current = data.get("presentation_mode", "single")
+    try:
+        idx = _AJT_PRESENTATION_CYCLE.index(current)
+    except ValueError:
+        idx = 0
+    nxt = _AJT_PRESENTATION_CYCLE[(idx + 1) % len(_AJT_PRESENTATION_CYCLE)]
+    await state.update_data(presentation_mode=nxt)
     await show_config_menu(callback, state)
 
 
@@ -946,7 +1000,7 @@ def _template_has_buttons(tmpl_code: str) -> bool:
     for i in range(len(phases_info)):
         try:
             phase = build_fn([], {}, i) or {}
-            if phase.get("response_type") == "buttons":
+            if phase.get("response_type") in ("buttons", "buttons_then_text"):
                 return True
         except Exception:
             # если шаблон не может построить фазу без trials — допускаем,
@@ -1492,23 +1546,35 @@ async def on_csv_slot(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_example")
 async def on_csv_example(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
-    """прислать csv-пример для выбранного слота (с учётом фазы)."""
+    """прислать csv-пример(ы) для выбранного слота (с учётом фазы).
+
+    шаблоны, у которых разные настройки требуют разных примеров (например,
+    Acceptability Judgment с одиночной/совместной подачей), могут
+    зарегистрировать несколько файлов через `extra_examples`. caption
+    берётся из `example_caption` шаблона, либо общий дефолтный текст."""
     await callback.answer()
     data = await state.get_data()
     template_type = data.get("template_type", "free_form")
     phase = int(data.get("current_phase_num") or 1)
-    path = tmpl_registry.get_example_csv_path(template_type, phase)
-    if not path:
+    paths = tmpl_registry.get_example_csv_paths(template_type, phase)
+    if not paths:
         await callback.message.answer("Для этого шаблона примера нет.")
         return
-    await bot.send_document(
-        callback.from_user.id,
-        FSInputFile(path, filename=f"{template_type}_phase{phase}_example.csv"),
-        caption=(
-            "Пример заполнения CSV для этой фазы. Скачайте, "
-            "адаптируйте под свой материал и загрузите обратно."
-        ),
+    caption = tmpl_registry.get_example_caption(template_type) or (
+        "Пример заполнения CSV для этой фазы. Скачайте, "
+        "адаптируйте под свой материал и загрузите обратно."
     )
+    for i, path in enumerate(paths):
+        # caption кладём только на первое сообщение, иначе он повторяется
+        # на каждом документе и засоряет чат
+        await bot.send_document(
+            callback.from_user.id,
+            FSInputFile(
+                path,
+                filename=f"{os.path.basename(path)}",
+            ),
+            caption=caption if i == 0 else None,
+        )
 
 
 @router.callback_query(CreateExperiment.uploading_csv, F.data == "csv_back_to_manifest")
@@ -1620,6 +1686,7 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "custom_buttons": data.get("custom_buttons") or {},
         "custom_likert": data.get("custom_likert") or {},
         "custom_instructions": data.get("custom_instructions") or {},
+        "presentation_mode": data.get("presentation_mode", "single"),
     }
 
     if editing_id:
@@ -1846,6 +1913,7 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
         custom_buttons=exp.get("custom_buttons") or {},
         custom_likert=exp.get("custom_likert") or {},
         custom_instructions=exp.get("custom_instructions") or {},
+        presentation_mode=exp.get("presentation_mode", "single"),
         # для free_form: сохраняем фазы как есть, on_save_draft их подхватит
         free_form_phases=exp.get("phases", []) if exp.get("template_type") == "free_form" else [],
     )

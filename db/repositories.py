@@ -117,6 +117,42 @@ async def get_active_session(telegram_id: int, experiment_id: str) -> Optional[d
     })
 
 
+async def get_latest_active_session(telegram_id: int) -> Optional[dict]:
+    """последняя по времени незавершённая сессия пользователя.
+
+    нужна, когда мы ловим не клик по конкретной клавиатуре, а текстовое или
+    голосовое сообщение: у респондента может остаться несколько брошенных
+    in_progress-сессий по разным экспериментам, и find_one возвращает
+    случайную. сортируем по _id desc — берём самую свежую."""
+    cursor = sessions_col.find({
+        "telegram_id": telegram_id,
+        "status": {"$in": ["started", "in_progress"]},
+    }).sort("_id", -1).limit(1)
+    docs = await cursor.to_list(length=1)
+    return docs[0] if docs else None
+
+
+async def abandon_other_active_sessions(
+    telegram_id: int, keep_session_id: Optional[str] = None,
+) -> int:
+    """закрыть все in_progress сессии пользователя кроме keep_session_id.
+
+    вызываем при старте/резюме нового прохождения, чтобы старые брошенные
+    сессии не цеплялись за текстовые ответы (см. get_latest_active_session)
+    и не конфликтовали по pending_judgment."""
+    query: dict = {
+        "telegram_id": telegram_id,
+        "status": {"$in": ["started", "in_progress"]},
+    }
+    if keep_session_id:
+        query["_id"] = {"$ne": ObjectId(keep_session_id)}
+    result = await sessions_col.update_many(
+        query,
+        {"$set": {"status": "abandoned", "finished_at": datetime.utcnow()}},
+    )
+    return result.modified_count
+
+
 async def get_sessions_by_experiment(experiment_id: str) -> list:
     cursor = sessions_col.find({"experiment_id": experiment_id})
     return await cursor.to_list(length=10000)

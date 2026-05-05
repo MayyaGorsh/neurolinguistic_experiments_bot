@@ -126,9 +126,15 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     keyboard = build_response_keyboard(trial, phase, session_id, phase_idx, trial_idx)
 
     if stimulus_type == "text":
+        body = trial.get("stimulus_content", "")
+        # AJT, режим joint_two_ratings: к стимулу приклеиваем подсказку
+        # «оцените 1-е предложение». после первого клика edit_message_text
+        # заменит её на «оцените 2-е предложение» (см. process_answer).
+        if phase.get("settings", {}).get("joint_two_ratings"):
+            body = _ajt_two_ratings_text(body, 1)
         msg = await bot.send_message(
             chat_id,
-            trial.get("stimulus_content", ""),
+            body,
             reply_markup=keyboard,
         )
     elif stimulus_type == "image":
@@ -191,13 +197,23 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     # таймер, если респондент успел ответить.
     time_limit = phase.get("time_limit") or experiment.get("time_limit")
     if time_limit and response_type in (
-        "buttons", "open_text", "voice", "likert", "multiple_choice",
+        "buttons", "buttons_then_text", "open_text", "voice", "likert",
+        "multiple_choice",
     ):
         cancel_timeout(session_id)
         task = asyncio.create_task(
             handle_timeout(bot, chat_id, session, experiment, time_limit, msg.message_id)
         )
         _timeout_tasks[session_id] = task
+
+
+def _ajt_two_ratings_text(stim_content: str, rating_idx: int) -> str:
+    """текст сообщения для AJT joint_two_ratings.
+
+    к телу стимула («1) … 2) …») приклеиваем подсказку, какое
+    из двух предложений сейчас оценивает участник."""
+    label = "1-е предложение" if rating_idx == 1 else "2-е предложение"
+    return f"{stim_content}\n\n<b>Оцените {label}</b>"
 
 
 # длина одной метки, сверх которой кнопка занимает свой ряд целиком
@@ -269,7 +285,7 @@ def build_response_keyboard(
     options = trial.get("response_options", [])
     prefix = f"ans_{session_id}_{phase_idx}_{trial_idx}"
 
-    if response_type == "buttons" and options:
+    if response_type in ("buttons", "buttons_then_text") and options:
         rows = _layout_buttons(options, prefix)
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -319,8 +335,14 @@ async def process_answer(
     experiment: dict,
     raw_response: str,
     option_index: Optional[int] = None,
+    message_id: Optional[int] = None,
 ):
-    """обработать ответ респондента на текущую пробу"""
+    """обработать ответ респондента на текущую пробу.
+
+    message_id — id сообщения, на кнопку которого был клик (нужен для
+    AJT joint_two_ratings, чтобы отредактировать текст и клавиатуру под
+    второе оценивание без отправки нового сообщения).
+    """
     session_id = str(session["_id"])
     phase_idx = session["current_phase"]
     trial_idx = session["current_trial"]
@@ -330,10 +352,210 @@ async def process_answer(
     # отменяем тайм-аут
     cancel_timeout(session_id)
 
+    response_type = phase.get("response_type", "buttons")
+    settings = phase.get("settings", {}) or {}
+
+    # AJT joint_two_ratings: один CSV-row → одна проба → ДВА клика по одному
+    # сообщению. при первом клике сохраняем оценку первого предложения в
+    # pending_first_rating и редактируем сообщение под второе оценивание.
+    # при втором клике сохраняем оба ответа двумя записями (rating_target
+    # = stimulus / stimulus2) и переходим к следующей пробе.
+    if settings.get("joint_two_ratings"):
+        pending = session.get("pending_first_rating")
+        normalized = raw_response.strip().lower()
+        correct_answer = trial.get("correct_answer")
+        is_correct = None
+        if correct_answer is not None:
+            ca = str(correct_answer).strip().lower()
+            is_correct = normalized == ca
+
+        if not pending:
+            shown_at = _stimulus_shown_at.pop(session_id, None)
+            rt_ms = int((time.time() - shown_at) * 1000) if shown_at else None
+            await repo.update_session(session_id, {
+                "pending_first_rating": {
+                    "raw_response": raw_response,
+                    "normalized_response": normalized,
+                    "is_correct": is_correct,
+                    "reaction_time_ms": rt_ms,
+                    "option_index": option_index,
+                },
+            })
+            # редактируем сообщение: тот же текст стимула, новая подсказка
+            new_text = _ajt_two_ratings_text(trial.get("stimulus_content", ""), 2)
+            new_kb = build_response_keyboard(
+                trial, phase, session_id, phase_idx, trial_idx,
+            )
+            if message_id is not None:
+                try:
+                    await bot.edit_message_text(
+                        new_text,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        reply_markup=new_kb,
+                    )
+                except Exception as e:
+                    # сообщение могло быть удалено / слишком старое и т.п. —
+                    # фолбэк: шлём новое сообщение со 2-й оценкой
+                    logger.warning("edit_message не удался: %s", e)
+                    fallback = await bot.send_message(
+                        chat_id, new_text, reply_markup=new_kb,
+                    )
+                    if experiment.get("delete_previous_trials", True):
+                        fresh = await repo.get_session(session_id)
+                        ids = list((fresh or {}).get("transient_message_ids") or [])
+                        ids.append(fallback.message_id)
+                        await repo.update_session(session_id, {
+                            "transient_message_ids": ids,
+                        })
+            # начинаем отсчёт RT для второй оценки
+            _stimulus_shown_at[session_id] = time.time()
+            return
+
+        # второй клик — собираем 2 answer-записи на одну пробу
+        shown_at = _stimulus_shown_at.pop(session_id, None)
+        rt2 = int((time.time() - shown_at) * 1000) if shown_at else None
+        list_id = session.get("assigned_list")
+        first_answer = {
+            "session_id": session_id,
+            "experiment_id": session["experiment_id"],
+            "phase_index": phase_idx,
+            "trial_index": trial_idx,
+            "stimulus_id": trial.get("auxiliary", {}).get(
+                "_stimulus_raw"
+            ) or trial.get("stimulus_content", ""),
+            "raw_response": pending.get("raw_response", ""),
+            "normalized_response": pending.get("normalized_response", ""),
+            "is_correct": pending.get("is_correct"),
+            "reaction_time_ms": pending.get("reaction_time_ms"),
+            "timed_out": False,
+            "timestamp": datetime.utcnow(),
+            "metadata": {"list_id": list_id, "rating_target": "stimulus"},
+        }
+        second_answer = {
+            "session_id": session_id,
+            "experiment_id": session["experiment_id"],
+            "phase_index": phase_idx,
+            "trial_index": trial_idx,
+            "stimulus_id": trial.get("auxiliary", {}).get(
+                "stimulus2"
+            ) or trial.get("stimulus_content", ""),
+            "raw_response": raw_response,
+            "normalized_response": normalized,
+            "is_correct": is_correct,
+            "reaction_time_ms": rt2,
+            "timed_out": False,
+            "timestamp": datetime.utcnow(),
+            "metadata": {"list_id": list_id, "rating_target": "stimulus2"},
+        }
+        await repo.save_answer(first_answer)
+        await repo.save_answer(second_answer)
+        await repo.update_session(session_id, {"pending_first_rating": None})
+        fresh = await repo.get_session(session_id) or session
+        await advance_trial(bot, chat_id, fresh, experiment)
+        return
+
+    # двухшаговый ответ: сначала кнопка (правильно/неправильно),
+    # затем текстовое обоснование. первый шаг — клик: фиксируем выбор
+    # в pending_judgment и просим обосновать. второй шаг — текст:
+    # собираем итоговый answer и переходим к следующей пробе.
+    # запрос обоснования включается ПОПРОБНО через CSV-колонку
+    # ask_justification ("да"/"нет"). если значение не "да" — клик
+    # сразу завершает пробу, без второго шага.
+    if response_type == "buttons_then_text":
+        pending = session.get("pending_judgment")
+        if not pending:
+            # первый шаг — пришла кнопка
+            shown_at = _stimulus_shown_at.pop(session_id, None)
+            rt_ms = int((time.time() - shown_at) * 1000) if shown_at else None
+            normalized = raw_response.strip().lower()
+            correct_answer = trial.get("correct_answer")
+            is_correct = None
+            if correct_answer is not None:
+                if isinstance(correct_answer, list):
+                    is_correct = normalized in [
+                        a.strip().lower() for a in correct_answer
+                    ]
+                else:
+                    is_correct = normalized == str(correct_answer).strip().lower()
+
+            ask = str(
+                (trial.get("auxiliary") or {}).get("ask_justification") or ""
+            ).strip().lower()
+            wants_justification = ask in ("да", "yes", "y", "true", "1")
+
+            if not wants_justification:
+                # обоснование не нужно — пишем ответ и идём дальше.
+                answer_data = {
+                    "session_id": session_id,
+                    "experiment_id": session["experiment_id"],
+                    "phase_index": phase_idx,
+                    "trial_index": trial_idx,
+                    "stimulus_id": trial.get("stimulus_content", ""),
+                    "raw_response": raw_response,
+                    "normalized_response": normalized,
+                    "is_correct": is_correct,
+                    "reaction_time_ms": rt_ms,
+                    "timed_out": False,
+                    "timestamp": datetime.utcnow(),
+                    "metadata": {"list_id": session.get("assigned_list")},
+                }
+                await repo.save_answer(answer_data)
+                await advance_trial(bot, chat_id, session, experiment)
+                return
+
+            await repo.update_session(session_id, {
+                "pending_judgment": {
+                    "raw_response": raw_response,
+                    "normalized_response": normalized,
+                    "is_correct": is_correct,
+                    "reaction_time_ms": rt_ms,
+                    "option_index": option_index,
+                },
+            })
+            prompt_msg = await bot.send_message(
+                chat_id,
+                "Опишите коротко, почему вы так решили:",
+            )
+            # держим приглашение в transient, чтобы оно удалилось вместе
+            # с подтверждением выбора при переходе к следующей пробе
+            if experiment.get("delete_previous_trials", True):
+                fresh = await repo.get_session(session_id)
+                ids = list((fresh or {}).get("transient_message_ids") or [])
+                ids.append(prompt_msg.message_id)
+                await repo.update_session(session_id, {
+                    "transient_message_ids": ids,
+                })
+            return
+
+        # второй шаг — пришёл текст с обоснованием
+        metadata = {
+            "list_id": session.get("assigned_list"),
+            "justification": raw_response,
+        }
+        answer_data = {
+            "session_id": session_id,
+            "experiment_id": session["experiment_id"],
+            "phase_index": phase_idx,
+            "trial_index": trial_idx,
+            "stimulus_id": trial.get("stimulus_content", ""),
+            "raw_response": pending.get("raw_response", ""),
+            "normalized_response": pending.get("normalized_response", ""),
+            "is_correct": pending.get("is_correct"),
+            "reaction_time_ms": pending.get("reaction_time_ms"),
+            "timed_out": False,
+            "timestamp": datetime.utcnow(),
+            "metadata": metadata,
+        }
+        await repo.save_answer(answer_data)
+        await repo.update_session(session_id, {"pending_judgment": None})
+        fresh = await repo.get_session(session_id) or session
+        await advance_trial(bot, chat_id, fresh, experiment)
+        return
+
     # считаем RT для всех интерактивных типов — для open_text/voice это
     # тоже полезно (когда задан тайм-аут или просто для анализа задержки)
     rt_ms = None
-    response_type = phase.get("response_type", "buttons")
     if response_type in ("buttons", "likert", "multiple_choice", "open_text", "voice"):
         shown_at = _stimulus_shown_at.pop(session_id, None)
         if shown_at:
