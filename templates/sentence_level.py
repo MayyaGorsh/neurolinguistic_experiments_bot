@@ -230,9 +230,10 @@ register("tvjt", {
 
 
 # ── Statement verification ──
-# 2 фазы: верификация утверждений + опциональная проверка знания (открытый ответ)
+# 2 фазы: верификация утверждений + контроль знания (кнопочные ответы).
 # фаза 1 CSV: stimulus, opt1..opt6 (правильный помечен * — опционально)
-# фаза 2 CSV: question (вопрос для проверки знания, открытый ответ)
+# фаза 2 CSV: question, opt1..opt6 (правильный помечен *), число опций
+# у разных вопросов может отличаться (лишние колонки оставить пустыми)
 
 def build_statement_verification(trials, config, phase_index=0):
     """единая build_phase: phase_index=0 — верификация, phase_index=1 — контроль"""
@@ -254,10 +255,10 @@ def build_statement_verification(trials, config, phase_index=0):
             "title": "Контроль знания",
             "instruction": "Ответьте на вопросы.",
             "stimulus_type": "text",
-            "response_type": "open_text",
+            "response_type": "buttons",
             "trials": trials,
-            "randomize_order": False,
-            "time_limit": None,
+            "randomize_order": config.get("randomize", False),
+            "time_limit": config.get("time_limit"),
             "settings": {},
         }
 
@@ -272,16 +273,43 @@ register("statement_verification", {
     "phase_csv_mappings": {
         2: {
             "stimulus_content": "question",
-            "required_columns": ["question"],
+            "response_options": ["opt1", "opt2", "opt3", "opt4", "opt5", "opt6"],
+            "required_columns": ["question", "opt1", "opt2"],
         },
     },
     "export_columns": [],
     "phases_info": ["Statement Verification", "Контроль знания"],
+    "example_caption_phase1": (
+        "<b>Statement Verification — основная фаза</b>\n\n"
+        "Участник читает утверждение и решает, верно оно или нет.\n\n"
+        "Колонки CSV:\n"
+        "• <code>stimulus</code> — само утверждение.\n"
+        "• <code>opt1</code>…<code>opt6</code> — варианты ответа на "
+        "кнопках (обычно «Верно» / «Неверно», но можно задать любой "
+        "набор от 2 до 6).\n\n"
+        "Правильный вариант помечается <code>*</code> (опционально, если "
+        "у утверждения есть объективно верный ответ): "
+        "<code>*Верно</code>."
+    ),
+    "example_caption_phase2": (
+        "<b>Statement Verification — контроль знания</b>\n\n"
+        "После верификации участнику задают контрольные вопросы с "
+        "кнопочными вариантами ответа — это позволяет отделить эффект "
+        "иллюзии (когда участник назвал ложное утверждение верным) от "
+        "обычного незнания.\n\n"
+        "Колонки CSV:\n"
+        "• <code>question</code> — текст вопроса.\n"
+        "• <code>opt1</code>…<code>opt6</code> — варианты ответа. "
+        "У разных вопросов количество вариантов может отличаться "
+        "(лишние колонки можно оставить пустыми).\n\n"
+        "Правильный вариант помечается <code>*</code>: "
+        "<code>*Ной</code>."
+    ),
 })
 
 
 # ── Self-Paced Reading ──
-# CSV: sentence_id, segment, region (опц.)
+# CSV: sentence_id, segment
 
 def build_spr(trials, config, phase_index=0):
     sentences = {}
@@ -307,7 +335,6 @@ def build_spr(trials, config, phase_index=0):
                 "stimulus_metadata": {
                     "sentence_id": sent_id,
                     "segment": word,
-                    "region": seg.get("auxiliary", {}).get("region", ""),
                 },
                 "response_options": [],
                 "correct_answer": None,
@@ -336,30 +363,57 @@ register("self_paced_reading", {
     "required_columns": ["sentence_id", "segment"],
     "csv_mapping": {
         "stimulus_content": "segment",
-        "auxiliary": ["sentence_id", "region"],
+        "auxiliary": ["sentence_id"],
     },
     "build_phase": build_spr,
-    "export_columns": ["sentence_id", "segment", "region"],
+    "export_columns": ["sentence_id", "segment"],
     "phases_info": ["Self-Paced Reading"],
 })
 
 
 # ── Maze task ──
-# CSV: target, distractor ($$$ — разделитель предложений)
+# CSV: target, distractor.
+# Для первого слова предложения, которое участник не выбирает,
+# в distractor ставится $$$ — на этом шаге слово просто показывается
+# с кнопкой «Далее», а не предлагается на выбор.
 
 def build_maze(trials, config, phase_index=0):
     import random
     maze_trials = []
     idx = 0
+    # накопленный текст текущего предложения. служит стимулом для
+    # очередной пробы выбора: участник видит «то, что собрано», а под
+    # ним — две кнопки с правильным и неправильным следующим словом.
+    acc = ""
+    # индекс текущего предложения: каждая строка с distractor=$$$ его
+    # увеличивает. рантайм по этому индексу прыгает к следующему
+    # предложению, если участник выбрал неправильное слово.
+    sentence_idx = -1
 
     for t in trials:
         target = t.get("stimulus_content", "").strip()
         aux = t.get("auxiliary", {})
         distractor = aux.get("distractor", "").strip()
 
+        if not target:
+            continue
+        # legacy-формат: $$$ стоял в target. сейчас он в distractor,
+        # старые ряды просто пропускаем (с инкрементом счётчика
+        # предложений, чтобы пересборка из старого CSV не ломалась).
         if target == "$$$":
+            sentence_idx += 1
+            acc = ""
             continue
 
+        if distractor == "$$$":
+            # начало нового предложения — первое слово ставится в acc,
+            # пробу не создаём: оно станет стимулом для следующей строки.
+            sentence_idx += 1
+            acc = target
+            continue
+
+        # обычная maze-проба: стимул — то, что собрано в acc;
+        # выбор — между target (правильное) и distractor (неправильное).
         options = [target, distractor]
         correct = target
         if random.random() > 0.5:
@@ -367,11 +421,12 @@ def build_maze(trials, config, phase_index=0):
 
         maze_trials.append({
             "trial_index": idx,
-            "stimulus_content": "",
+            "stimulus_content": acc,
             "stimulus_type": "text",
             "stimulus_metadata": {
                 "target": target,
                 "distractor": distractor,
+                "sentence_idx": max(sentence_idx, 0),
             },
             "response_options": options,
             "correct_answer": correct,
@@ -379,6 +434,7 @@ def build_maze(trials, config, phase_index=0):
             "list_id": t.get("list_id"),
         })
         idx += 1
+        acc = (acc + " " + target).strip()
 
     return {
         "phase_index": phase_index,
@@ -405,31 +461,68 @@ register("maze", {
     "build_phase": build_maze,
     "export_columns": ["target", "distractor"],
     "phases_info": ["Maze Task"],
+    "example_caption": (
+        "<b>Пример CSV для Maze Task</b>\n\n"
+        "Каждая строка — одно слово предложения и его дистрактор "
+        "(невозможное продолжение).\n\n"
+        "Колонки:\n"
+        "• <code>target</code> — правильное слово.\n"
+        "• <code>distractor</code> — неправильное слово на второй "
+        "кнопке. Бот сам перемешает их позиции попробно.\n\n"
+        "<b>Начало предложения.</b> Слово, с которого начинается "
+        "предложение, участник не выбирает — оно выводится как стимул, "
+        "а под ним появляются варианты выбора <i>следующего</i> "
+        "слова. Чтобы пометить такую строку, поставьте <code>$$$</code> "
+        "в столбце <code>distractor</code>.\n\n"
+        "Несколько предложений идут в файле подряд: каждое начинается "
+        "со своей строки с <code>$$$</code>. Между предложениями "
+        "перехода с «Далее» нет — после клика по последнему слову бот "
+        "сразу показывает первое слово следующего предложения. Если "
+        "участник выбрал неправильную опцию — оставшаяся часть "
+        "предложения пропускается, бот переходит к следующему."
+    ),
 })
 
 
 # ── Text change detection ──
 # CSV: text_original, text_repeated, changed_word_original, changed_word_new
+# Поток на пробу — двухстадийный (см. runner.process_answer):
+# 1) Показывается text_original с единственной кнопкой «Далее».
+#    Фиксируем reading_rt_ms — сколько участник читал оригинал.
+# 2) По клику «Далее» сообщение редактируется в text_repeated с
+#    кнопками «было / не было». Фиксируем reaction_time_ms — время
+#    собственно решения.
 
 def build_text_change(trials, config, phase_index=0):
+    new_trials = []
     for t in trials:
-        aux = t.get("auxiliary", {})
-        t["stimulus_metadata"] = {
-            "text_repeated": aux.get("text_repeated", t["stimulus_content"]),
+        aux = dict(t.get("auxiliary") or {})
+        new_t = dict(t)
+        new_t["auxiliary"] = aux
+        # opt1 в CSV — по конвенции «изменение было», opt2 — «изменения не
+        # было». is_change_label запоминает строку первого варианта, чтобы
+        # рантайм мог понять, выбрал ли участник «было»-ветку, и спросить
+        # у него оригинальное и новое слово.
+        opts = list(t.get("response_options") or [])
+        new_t["stimulus_metadata"] = {
+            "text_repeated": aux.get("text_repeated", t.get("stimulus_content", "")),
             "changed_word_original": aux.get("changed_word_original", ""),
             "changed_word_new": aux.get("changed_word_new", ""),
+            "is_change_label": opts[0] if opts else "",
         }
+        new_trials.append(new_t)
 
     return {
         "phase_index": phase_index,
         "title": "Text Change Detection",
         "instruction": (
-            "Вам будет показан текст, затем он исчезнет, и появится "
-            "повторное предъявление. Определите, было ли изменение."
+            "Вам будет показан текст. Прочитайте его и нажмите «Далее» — "
+            "после этого текст сменится на повторное предъявление, и нужно "
+            "будет ответить, было ли в нём изменение."
         ),
         "stimulus_type": "text",
         "response_type": "buttons",
-        "trials": trials,
+        "trials": new_trials,
         "randomize_order": config.get("randomize", False),
         "time_limit": config.get("time_limit"),
         "settings": {"is_text_change": True},
@@ -444,8 +537,40 @@ register("text_change_detection", {
         "auxiliary": ["text_repeated", "changed_word_original", "changed_word_new"],
     },
     "build_phase": build_text_change,
-    "export_columns": ["changed_word_original", "changed_word_new"],
+    "export_columns": [
+        "changed_word_original", "changed_word_new", "reading_rt_ms",
+        "user_change_original", "user_change_new",
+    ],
     "phases_info": ["Text Change Detection"],
+    "example_caption": (
+        "<b>Пример CSV для Text Change Detection</b>\n\n"
+        "Каждая строка — одна проба. Бот покажет <code>text_original</code> "
+        "с кнопкой «Далее»; когда участник её нажмёт, сообщение "
+        "сменится на <code>text_repeated</code> с кнопками ответа. "
+        "Если участник выберет «было изменение» — бот задаст ещё два "
+        "вопроса: какое слово было в оригинале и на какое заменили.\n\n"
+        "Колонки:\n"
+        "• <code>text_original</code> — исходный текст.\n"
+        "• <code>text_repeated</code> — повторное предъявление. Если "
+        "хотите, чтобы изменения <i>не</i> было — повторите тот же текст.\n"
+        "• <code>changed_word_original</code> — слово в оригинале, "
+        "которое заменили (для проб без изменения оставьте пустым).\n"
+        "• <code>changed_word_new</code> — слово в повторном "
+        "предъявлении, на которое его заменили (тоже пустое для "
+        "одинаковых текстов).\n"
+        "• <code>opt1</code> и <code>opt2</code> — лейблы кнопок ответа.\n\n"
+        "<b>⚠️ Важно про порядок opt1/opt2.</b> Бот по позиции "
+        "распознаёт, заметил ли участник изменение, чтобы потом задать "
+        "уточняющие вопросы. Поэтому строго:\n"
+        "• в <code>opt1</code> — вариант «<b>изменение было</b>»,\n"
+        "• в <code>opt2</code> — вариант «<b>изменения не было</b>».\n"
+        "Сами тексты можно поменять (например, «Заметил» / «Не "
+        "заметил»), главное — не путать колонки местами. Иначе бот "
+        "будет спрашивать слова при выборе «не было».\n\n"
+        "Поставьте <code>*</code> перед правильным вариантом: "
+        "<code>*Изменение было</code> для проб с заменой, "
+        "<code>*Изменения не было</code> для одинаковых текстов."
+    ),
 })
 
 

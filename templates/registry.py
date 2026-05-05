@@ -71,13 +71,18 @@ def get_example_csv_paths(code: str, phase: int = 1) -> list[str]:
     return paths
 
 
-def get_example_caption(code: str) -> str | None:
+def get_example_caption(code: str, phase: int = 1) -> str | None:
     """пользовательский комментарий, который шлётся вместе с примером CSV.
 
-    шаблон может задать его через поле `example_caption` в register(...).
-    если не задан — caller использует общий дефолтный текст.
+    шаблон может задать его глобально (`example_caption`) или попробно
+    (`example_caption_phase1`, `example_caption_phase2`, …). per-phase
+    приоритетнее: используем его, если задан; иначе fallback на общий.
+    если ничего не задано — caller использует дефолтный текст.
     """
     info = _TEMPLATES.get(code) or {}
+    per_phase = info.get(f"example_caption_phase{phase}")
+    if isinstance(per_phase, str) and per_phase.strip():
+        return per_phase
     cap = info.get("example_caption")
     return cap if isinstance(cap, str) and cap.strip() else None
 

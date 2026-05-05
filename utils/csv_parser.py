@@ -89,15 +89,18 @@ def rows_to_trials(rows: list[dict], mapping: dict) -> list[dict]:
             "list_id": row.get("list_id"),
         }
 
-        # стимул
+        # стимул. csv.DictReader ставит None для ячеек, которых в строке
+        # вообще нет (когда у строки меньше полей, чем в шапке — допустимый
+        # сценарий для шаблонов с переменным числом опций, например phase 2
+        # statement_verification). нормализуем None к пустой строке заранее.
         stim_col = mapping.get("stimulus_content", "stimulus")
         if stim_col in row:
-            trial["stimulus_content"] = row[stim_col]
+            trial["stimulus_content"] = row[stim_col] or ""
 
         # правильный ответ
         correct_col = mapping.get("correct_answer")
         if correct_col and correct_col in row:
-            val = row[correct_col].strip()
+            val = (row[correct_col] or "").strip()
             if val:
                 trial["correct_answer"] = val
 
@@ -106,20 +109,24 @@ def rows_to_trials(rows: list[dict], mapping: dict) -> list[dict]:
         if isinstance(opt_cols, list):
             options = []
             for col in opt_cols:
-                if col in row and row[col].strip():
-                    val = row[col].strip()
-                    # помечен * — правильный ответ
-                    if val.startswith("*"):
-                        val = val[1:].strip()
-                        trial["correct_answer"] = val
-                    options.append(val)
+                cell = row.get(col)
+                if cell is None:
+                    continue
+                val = cell.strip()
+                if not val:
+                    continue
+                # помечен * — правильный ответ
+                if val.startswith("*"):
+                    val = val[1:].strip()
+                    trial["correct_answer"] = val
+                options.append(val)
             trial["response_options"] = options
 
         # дополнительные поля
         aux_cols = mapping.get("auxiliary", [])
         for col in aux_cols:
             if col in row:
-                trial["auxiliary"][col] = row[col]
+                trial["auxiliary"][col] = row[col] or ""
 
         trials.append(trial)
 

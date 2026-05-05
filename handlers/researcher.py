@@ -148,7 +148,7 @@ async def on_template_chosen(callback: types.CallbackQuery, state: FSMContext):
 @router.message(CreateExperiment.entering_title, F.text)
 async def on_title_entered(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text.strip())
-    await message.answer("Введите описание эксперимента (его увидят респонденты):")
+    await message.answer("Введите приветственное сообщение для респондентов:")
     await state.set_state(CreateExperiment.entering_description)
 
 
@@ -175,124 +175,171 @@ async def on_description_entered(message: types.Message, state: FSMContext):
     await show_config_menu(message, state)
 
 
-async def show_config_menu(message_or_cb, state: FSMContext):
-    """показать меню настроек эксперимента"""
-    data = await state.get_data()
+def _collect_settings_state(data: dict) -> dict:
+    """собрать словарь текущих настроек + готовые человекочитаемые лейблы.
+    Используется обоими экранами (top-level summary и settings submenu),
+    чтобы не дублировать парсинг state.data."""
     tmpl = data.get("template_type", "free_form")
-
-    # текущие настройки
     randomize = data.get("randomize", False)
     randomize_buttons = data.get("randomize_button_positions", False)
     delete_previous = data.get("delete_previous_trials", True)
     lists_count = int(data.get("lists_count", 1) or 1)
     use_lists = lists_count >= 2
     lists_label = "нет" if not use_lists else f"{lists_count} шт."
-    demo_mode = data.get("demographics_mode", "off")  # off / standard / custom
+    demo_mode = data.get("demographics_mode", "off")
     demo_custom = data.get("demographics_custom", [])
     time_limit = data.get("time_limit", None)
     allow_repeat = data.get("allow_repeat", False)
-
     demo_label = {
         "off": "нет",
         "standard": "стандартная",
         "custom": f"своя ({len(demo_custom)} вопр.)",
     }.get(demo_mode, "нет")
-
-    has_buttons = _template_has_buttons(tmpl)
-    ajt_show_presentation = (
-        tmpl == "acceptability_judgment" and _ajt_has_stimulus2(data)
-    )
     presentation_mode = data.get("presentation_mode", "single")
     presentation_label = _AJT_PRESENTATION_LABELS.get(
         presentation_mode, presentation_mode,
     )
+    return {
+        "tmpl": tmpl,
+        "randomize": randomize,
+        "randomize_buttons": randomize_buttons,
+        "delete_previous": delete_previous,
+        "lists_count": lists_count,
+        "lists_label": lists_label,
+        "demo_label": demo_label,
+        "time_limit": time_limit,
+        "timeout_value": f"{time_limit} сек" if time_limit else "нет",
+        "allow_repeat": allow_repeat,
+        "presentation_mode": presentation_mode,
+        "presentation_label": presentation_label,
+        "has_buttons": _template_has_buttons(tmpl),
+        "ajt_show_presentation": (
+            tmpl == "acceptability_judgment" and _ajt_has_stimulus2(data)
+        ),
+    }
 
-    text_parts = [
-        f"<b>Настройки эксперимента</b>\n",
-        f"Шаблон: {tmpl}",
-        f"Рандомизация: {'да' if randomize else 'нет'}",
-    ]
-    if has_buttons:
-        text_parts.append(
-            f"Рандомизация позиций кнопок: {'да' if randomize_buttons else 'нет'}"
-        )
-    if ajt_show_presentation:
-        text_parts.append(f"Режим подачи: {presentation_label}")
-    text_parts += [
-        f"Чистить предыдущие пробы: {'да' if delete_previous else 'нет'}",
-        f"Листы: {lists_label}",
-        f"Демография: {demo_label}",
-        f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}",
-        f"Повторное прохождение: {'да' if allow_repeat else 'нет'}",
-    ]
-    text = "\n".join(text_parts) + "\n"
 
-    buttons = [
+async def show_config_menu(message_or_cb, state: FSMContext):
+    """top-level меню: краткая сводка настроек + 6 действий.
+    подменю с самими тогглами — show_settings_submenu (из «Настроить
+    эксперимент»). сводка моноширинная (<pre>) ради ровных колонок —
+    кнопки в Telegram рендерятся пропорциональным шрифтом, в тексте
+    сообщения с <pre> можно выровнять по символам."""
+    data = await state.get_data()
+    s = _collect_settings_state(data)
+    tmpl = s["tmpl"]
+
+    summary_rows: list[tuple[str, str]] = [
+        ("Рандомизация", "да" if s["randomize"] else "нет"),
+    ]
+    if s["has_buttons"]:
+        summary_rows.append((
+            "Рандомизация позиций кнопок",
+            "да" if s["randomize_buttons"] else "нет",
+        ))
+    if s["ajt_show_presentation"]:
+        summary_rows.append(("Режим подачи", s["presentation_label"]))
+    summary_rows += [
+        ("Чистить предыдущие пробы", "да" if s["delete_previous"] else "нет"),
+        ("Распределение по листам", s["lists_label"]),
+        ("Демография", s["demo_label"]),
+        ("Тайм-аут", s["timeout_value"]),
+        ("Повторное прохождение", "да" if s["allow_repeat"] else "нет"),
+    ]
+    label_w = max(len(label) for label, _ in summary_rows) + 2
+    summary_lines = [f"{label.ljust(label_w)}{value}" for label, value in summary_rows]
+    summary_block = "<pre>" + "\n".join(summary_lines) + "</pre>"
+
+    text = (
+        "<b>Настройки эксперимента</b>\n\n"
+        f"Шаблон: {tmpl}\n\n"
+        f"{summary_block}"
+    )
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    if tmpl != "free_form":
+        buttons.append([InlineKeyboardButton(
+            text="📎 Загрузить CSV", callback_data="cfg_upload_csv",
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="⚙️ Настроить эксперимент", callback_data="cfg_settings_submenu",
+    )])
+    # инструкции фаз доступны для любого шаблона со своим build_phase;
+    # для free_form они хранятся в самих фазах, поэтому пропускаем.
+    if tmpl_registry.get_template(tmpl):
+        buttons.append([InlineKeyboardButton(
+            text="📝 Настроить инструкции фаз", callback_data="cfg_instructions",
+        )])
+    buttons += [
         [InlineKeyboardButton(
-            text=f"{'✅' if randomize else '❌'} Рандомизация",
+            text="💬 Настроить приветственное сообщение",
+            callback_data="cfg_description",
+        )],
+        [InlineKeyboardButton(text="✅ Сохранить как черновик", callback_data="cfg_save")],
+    ]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await _render_screen(message_or_cb, text, kb, state=state)
+    await state.set_state(CreateExperiment.configuring)
+
+
+async def show_settings_submenu(message_or_cb, state: FSMContext):
+    """подменю «Настроить эксперимент»: все тогглы со значениями + кнопки
+    кастомизации (Кнопки ответа / Шкала ответа) — для тех шаблонов, где
+    они применимы."""
+    data = await state.get_data()
+    s = _collect_settings_state(data)
+    tmpl = s["tmpl"]
+
+    text = "<b>Настройки эксперимента</b>"
+
+    buttons: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(
+            text=f"Рандомизация — {'да' if s['randomize'] else 'нет'}",
             callback_data="cfg_randomize",
         )],
     ]
-    if has_buttons:
+    if s["has_buttons"]:
         buttons.append([InlineKeyboardButton(
-            text=f"{'✅' if randomize_buttons else '❌'} Рандомизация позиций кнопок",
+            text=f"Рандомизация позиций кнопок — {'да' if s['randomize_buttons'] else 'нет'}",
             callback_data="cfg_randomize_buttons",
         )])
-    if ajt_show_presentation:
+    if s["ajt_show_presentation"]:
         buttons.append([InlineKeyboardButton(
-            text=f"🎯 Режим подачи: {presentation_label}",
+            text=f"Режим подачи — {s['presentation_label']}",
             callback_data="cfg_presentation_mode",
         )])
     buttons += [
         [InlineKeyboardButton(
-            text=f"{'✅' if delete_previous else '❌'} Чистить предыдущие пробы",
+            text=f"Чистить предыдущие пробы — {'да' if s['delete_previous'] else 'нет'}",
             callback_data="cfg_delete_previous",
         )],
         [InlineKeyboardButton(
-            text=f"📋 Распределение по листам: {lists_label}",
+            text=f"Распределение по листам — {s['lists_label']}",
             callback_data="cfg_lists",
         )],
         [InlineKeyboardButton(
-            text=f"Демография: {demo_label}",
+            text=f"Демография — {s['demo_label']}",
             callback_data="cfg_demographics",
         )],
         [InlineKeyboardButton(
-            text=f"Тайм-аут: {str(time_limit) + ' сек' if time_limit else 'нет'}",
+            text=f"Тайм-аут — {s['timeout_value']}",
             callback_data="cfg_timeout",
         )],
         [InlineKeyboardButton(
-            text=f"{'✅' if allow_repeat else '❌'} Повторное прохождение",
+            text=f"Повторное прохождение — {'да' if s['allow_repeat'] else 'нет'}",
             callback_data="cfg_repeat",
         )],
     ]
-    # для свободного формата CSV-загрузки нет — структура задаётся
-    # через отдельный wizard; показываем кнопку только для шаблонов
-    if tmpl != "free_form":
-        buttons.append(
-            [InlineKeyboardButton(text="📎 Загрузить CSV", callback_data="cfg_upload_csv")]
-        )
 
-    # кнопки кастомизации — только если шаблон объявил дефолты
+    # template-specific: «🔤 Кнопки ответа» / «📊 Шкала ответа»
     tmpl_info_for_btn = tmpl_registry.get_template(tmpl)
     if tmpl_info_for_btn:
-        # «🔤 Кнопки ответа» показываем, когда у шаблона есть
-        # default_response_options и нет Likert-шкалы. шаблоны, где
-        # варианты приходят строго из CSV (forced_choice, cloze_mc,
-        # word_translation_mc, video_task), default_response_options
-        # не объявляют — кнопка для них и не появляется. для шаблонов
-        # с гибридом (csv-опции с фолбэком на дефолты — TVJT, statement_
-        # verification) кастомизация валидна для дефолтного режима, и
-        # это согласуется с тем, что «Рандомизация позиций кнопок» тоже
-        # показывается.
         has_likert = bool(tmpl_info_for_btn.get("default_likert"))
         if tmpl_info_for_btn.get("default_response_options") and not has_likert:
             buttons.append([InlineKeyboardButton(
                 text="🔤 Кнопки ответа", callback_data="cfg_buttons",
             )])
-        # для AJT шкала ответа применяется только когда в CSV нет колонок
-        # opt1..optN: тогда build_acceptability падает в числовую Likert.
-        # если CSV уже загружен с явными подписями — настройка игнорируется,
-        # кнопку прячем, чтобы исследователь не возился с ней зря.
         hide_likert_btn = (
             tmpl == "acceptability_judgment"
             and _ajt_csv_has_response_options(data)
@@ -301,27 +348,16 @@ async def show_config_menu(message_or_cb, state: FSMContext):
             buttons.append([InlineKeyboardButton(
                 text="📊 Шкала ответа", callback_data="cfg_likert",
             )])
-        # инструкции фазам можно переопределить в любом шаблоне
-        # (подтянем дефолты из build_phase при заходе в подменю)
-        buttons.append([InlineKeyboardButton(
-            text="📝 Инструкции фаз", callback_data="cfg_instructions",
-        )])
-    # приветствие (description) — отдельной кнопкой, общей для всех
+
     buttons.append([InlineKeyboardButton(
-        text="💬 Приветственное сообщение", callback_data="cfg_description",
+        text="ℹ️ Что это всё значит?", callback_data="cfg_help",
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="← Назад", callback_data="cfg_back_to_main",
     )])
 
-    buttons += [
-        [InlineKeyboardButton(text="ℹ️ Что это всё значит?", callback_data="cfg_help")],
-        [InlineKeyboardButton(text="✅ Сохранить как черновик", callback_data="cfg_save")],
-    ]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    # _render_screen сам решит, редактировать или слать новое; и одновременно
-    # обновит active_menu_msg_id в state, чтобы StaleMenuGuard блокировал
-    # клики по предыдущим экранам конфигурации.
     await _render_screen(message_or_cb, text, kb, state=state)
-
     await state.set_state(CreateExperiment.configuring)
 
 
@@ -433,7 +469,7 @@ async def show_config_help(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Дальше →", callback_data="cfg_help_2")],
-        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="← Назад", callback_data="cfg_back_to_settings")],
     ])
     await _render_screen(callback, _CONFIG_HELP_PAGE_1, kb, state=state)
 
@@ -443,26 +479,57 @@ async def show_config_help_page_2(callback: types.CallbackQuery, state: FSMConte
     """объяснение параметров эксперимента — страница 2"""
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← Назад", callback_data="cfg_help")],
-        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="← Назад к странице 1", callback_data="cfg_help")],
+        [InlineKeyboardButton(text="← В настройки", callback_data="cfg_back_to_settings")],
     ])
     await _render_screen(callback, _CONFIG_HELP_PAGE_2, kb, state=state)
 
 
+def _reset_input_flags() -> dict:
+    """очистить waiting_*-флаги ввода, чтобы следующее текстовое сообщение
+    не было интерпретировано как недозавершённый ввод тайм-аута, метки
+    кнопки и т.п. — используем при любом «выходе наверх» из суб-экрана."""
+    return {
+        "waiting_button_edit": None,
+        "waiting_likert_edit": None,
+        "waiting_instruction_edit": None,
+        "waiting_description_edit": False,
+        "waiting_timeout": False,
+        "waiting_lists_count": False,
+    }
+
+
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_back")
 async def cfg_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    """legacy «назад» — используется help-страницами и редакторами
+    инструкций/приветствия; ведёт в top-level меню."""
     await callback.answer()
-    # сбрасываем флаги ожидания ввода, чтобы следующее сообщение
-    # не было интерпретировано как недозавершённый ввод метки
-    await state.update_data(
-        waiting_button_edit=None,
-        waiting_likert_edit=None,
-        waiting_instruction_edit=None,
-        waiting_description_edit=False,
-        waiting_timeout=False,
-        waiting_lists_count=False,
-    )
+    await state.update_data(**_reset_input_flags())
     await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_back_to_main")
+async def cfg_back_to_main(callback: types.CallbackQuery, state: FSMContext):
+    """«Назад» из подменю «Настроить эксперимент» в top-level."""
+    await callback.answer()
+    await state.update_data(**_reset_input_flags())
+    await show_config_menu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_back_to_settings")
+async def cfg_back_to_settings(callback: types.CallbackQuery, state: FSMContext):
+    """«Назад» из суб-экранов конкретных настроек (Демография, Тайм-аут,
+    Листы, Кнопки ответа, Шкала ответа) — обратно в подменю настроек."""
+    await callback.answer()
+    await state.update_data(**_reset_input_flags())
+    await show_settings_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_settings_submenu")
+async def on_open_settings_submenu(callback: types.CallbackQuery, state: FSMContext):
+    """вход в подменю «Настроить эксперимент» из top-level."""
+    await callback.answer()
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_randomize")
@@ -470,7 +537,7 @@ async def toggle_randomize(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
     await state.update_data(randomize=not data.get("randomize", False))
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_randomize_buttons")
@@ -480,7 +547,7 @@ async def toggle_randomize_buttons(callback: types.CallbackQuery, state: FSMCont
     await state.update_data(
         randomize_button_positions=not data.get("randomize_button_positions", False)
     )
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_presentation_mode")
@@ -495,7 +562,7 @@ async def toggle_presentation_mode(callback: types.CallbackQuery, state: FSMCont
         idx = 0
     nxt = _AJT_PRESENTATION_CYCLE[(idx + 1) % len(_AJT_PRESENTATION_CYCLE)]
     await state.update_data(presentation_mode=nxt)
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_delete_previous")
@@ -505,7 +572,7 @@ async def toggle_delete_previous(callback: types.CallbackQuery, state: FSMContex
     # дефолт — True; первое нажатие выключает
     current = data.get("delete_previous_trials", True)
     await state.update_data(delete_previous_trials=not current)
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_lists")
@@ -515,7 +582,7 @@ async def ask_lists_count(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     current = int(data.get("lists_count", 1) or 1)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cfg_back_to_settings")],
     ])
     await _render_screen(
         callback,
@@ -552,7 +619,7 @@ async def show_demographics_menu(callback: types.CallbackQuery, state: FSMContex
         [InlineKeyboardButton(text="❌ Нет", callback_data="demo_off")],
         [InlineKeyboardButton(text="📋 Стандартная", callback_data="demo_standard")],
         [InlineKeyboardButton(text="📎 Загрузить свою (CSV)", callback_data="demo_upload")],
-        [InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")],
+        [InlineKeyboardButton(text="← Назад", callback_data="cfg_back_to_settings")],
     ])
     await _render_screen(callback, text, kb, state=state)
 
@@ -561,14 +628,14 @@ async def show_demographics_menu(callback: types.CallbackQuery, state: FSMContex
 async def demo_set_off(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.update_data(demographics_mode="off", demographics_custom=[])
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "demo_standard")
 async def demo_set_standard(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.update_data(demographics_mode="standard", demographics_custom=[])
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "demo_upload")
@@ -704,7 +771,7 @@ async def demo_on_csv_uploaded(message: types.Message, state: FSMContext, bot: B
     )
     await message.answer(f"Анкета загружена: {len(questions)} вопрос(ов).")
     await state.set_state(CreateExperiment.configuring)
-    await show_config_menu(message, state)
+    await show_settings_submenu(message, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_repeat")
@@ -712,7 +779,7 @@ async def toggle_repeat(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
     await state.update_data(allow_repeat=not data.get("allow_repeat", False))
-    await show_config_menu(callback, state)
+    await show_settings_submenu(callback, state)
 
 
 # ── кастомизация кнопок ответа ──
@@ -777,7 +844,7 @@ async def _show_buttons_submenu(callback: types.CallbackQuery, state: FSMContext
         text="↩️ Сбросить к дефолту", callback_data="btn_reset",
     )])
     buttons.append([InlineKeyboardButton(
-        text="← Назад к настройкам", callback_data="cfg_back",
+        text="← Назад", callback_data="cfg_back_to_settings",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await _render_screen(callback, text, kb, state=state)
@@ -799,7 +866,7 @@ async def _send_buttons_submenu(message: types.Message, state: FSMContext):
         text=f"✏️ {i+1}: {lbl}", callback_data=f"btn_edit_{i}",
     )] for i, lbl in enumerate(labels)]
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="btn_reset")])
-    buttons.append([InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")])
+    buttons.append([InlineKeyboardButton(text="← Назад", callback_data="cfg_back_to_settings")])
     await _render_screen(
         message, text,
         InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -833,7 +900,7 @@ async def _send_likert_submenu(message: types.Message, state: FSMContext):
             callback_data=f"lkt_edit_{i}",
         )])
     buttons.append([InlineKeyboardButton(text="↩️ Сбросить к дефолту", callback_data="lkt_reset")])
-    buttons.append([InlineKeyboardButton(text="← Назад к настройкам", callback_data="cfg_back")])
+    buttons.append([InlineKeyboardButton(text="← Назад", callback_data="cfg_back_to_settings")])
     await _render_screen(
         message, text,
         InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -938,7 +1005,7 @@ async def _show_likert_submenu(callback: types.CallbackQuery, state: FSMContext)
         text="↩️ Сбросить к дефолту", callback_data="lkt_reset",
     )])
     buttons.append([InlineKeyboardButton(
-        text="← Назад к настройкам", callback_data="cfg_back",
+        text="← Назад", callback_data="cfg_back_to_settings",
     )])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await _render_screen(callback, text, kb, state=state)
@@ -1024,6 +1091,12 @@ def _template_has_buttons(tmpl_code: str) -> bool:
     for i in range(len(phases_info)):
         try:
             phase = build_fn([], {}, i) or {}
+            settings = phase.get("settings", {}) or {}
+            # SPR — единственная кнопка «Далее», шаффлить нечего;
+            # Maze сам мешает target/distractor попробно (см. build_maze),
+            # глобальная рандомизация для него тоже бессмысленна.
+            if settings.get("is_spr") or settings.get("is_maze"):
+                continue
             if phase.get("response_type") in ("buttons", "buttons_then_text"):
                 return True
         except Exception:
@@ -1059,7 +1132,9 @@ def _get_current_instruction(data: dict, tmpl_code: str, phase_index: int) -> st
 
 def _build_instructions_text_and_kb(data: dict) -> tuple[str, InlineKeyboardMarkup]:
     tmpl_code = data.get("template_type", "")
-    phases_info = data.get("phases_info") or ["Основная фаза"]
+    # для новых экспериментов on_template_chosen не кладёт phases_info
+    # в state — берём из реестра. _csv_template_phases уже умеет это.
+    phases_info = data.get("phases_info") or _csv_template_phases(data)
     text_lines = [
         "<b>Инструкции фаз</b>\n",
         "Текст, который респондент видит перед стимулами. "
@@ -1194,7 +1269,7 @@ async def on_config_text(message: types.Message, state: FSMContext):
         except ValueError:
             await message.answer("Введите целое число.")
             return
-        await show_config_menu(message, state)
+        await show_settings_submenu(message, state)
         return
 
     # количество листов
@@ -1220,7 +1295,7 @@ async def on_config_text(message: types.Message, state: FSMContext):
             csv_data=pruned,
             waiting_lists_count=False,
         )
-        await show_config_menu(message, state)
+        await show_settings_submenu(message, state)
         return
 
     # редактирование метки кнопки
@@ -1584,7 +1659,7 @@ async def on_csv_example(callback: types.CallbackQuery, state: FSMContext, bot: 
     if not paths:
         await callback.message.answer("Для этого шаблона примера нет.")
         return
-    caption = tmpl_registry.get_example_caption(template_type) or (
+    caption = tmpl_registry.get_example_caption(template_type, phase) or (
         "Пример заполнения CSV для этой фазы. Скачайте, "
         "адаптируйте под свой материал и загрузите обратно."
     )
@@ -1718,6 +1793,12 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "custom_likert": data.get("custom_likert") or {},
         "custom_instructions": data.get("custom_instructions") or {},
         "presentation_mode": data.get("presentation_mode", "single"),
+        # сохраняем «сырой» csv_data рядом с phases. при правке черновика
+        # некоторые шаблоны (maze) сильно меняют структуру в build_phase
+        # — их build не идемпотентен, и пересборка из phase.trials дала бы
+        # рекурсивно-склеенные стимулы. Cырые ряды позволяют сохранить
+        # исходные данные и пересобрать из них корректно.
+        "csv_data_raw": data.get("csv_data") or {},
     }
 
     if editing_id:
@@ -1900,14 +1981,25 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
     else:
         demo_mode = "standard"
 
-    # восстанавливаем csv_data из фаз: ключ "{phase_num}_{list_id}"
-    csv_data: dict[str, list] = {}
-    for phase_idx, phase in enumerate(exp.get("phases", [])):
-        phase_num = phase_idx + 1
-        for trial in phase.get("trials", []):
-            list_id = str(trial.get("list_id") or "1")
-            key = f"{phase_num}_{list_id}"
-            csv_data.setdefault(key, []).append(trial)
+    # сначала пытаемся достать «сырой» csv_data, который сохранили рядом
+    # с phases на on_save_draft. он содержит исходные парсенные ряды CSV
+    # (до build_phase) — ровно то, что нужно для повторной сборки. без
+    # него для не-идемпотентных шаблонов (maze) пересборка из phase.trials
+    # даёт рекурсивно-склеенные стимулы.
+    raw = exp.get("csv_data_raw")
+    if isinstance(raw, dict) and raw:
+        csv_data: dict[str, list] = {k: list(v) for k, v in raw.items()}
+    else:
+        # fallback для старых экспериментов без csv_data_raw — собираем
+        # по phase.trials. для шаблонов с идемпотентным build (большинство)
+        # этого достаточно.
+        csv_data = {}
+        for phase_idx, phase in enumerate(exp.get("phases", [])):
+            phase_num = phase_idx + 1
+            for trial in phase.get("trials", []):
+                list_id = str(trial.get("list_id") or "1")
+                key = f"{phase_num}_{list_id}"
+                csv_data.setdefault(key, []).append(trial)
 
     # список фаз для шаблона (нужен в меню «Что загрузить дальше»)
     tmpl_info = tmpl_registry.get_template(exp.get("template_type", ""))

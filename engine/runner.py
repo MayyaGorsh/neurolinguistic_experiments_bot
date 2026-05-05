@@ -125,13 +125,31 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     # собираем клавиатуру ответов
     keyboard = build_response_keyboard(trial, phase, session_id, phase_idx, trial_idx)
 
+    # Text Change Detection: первая стадия — text_original с единственной
+    # кнопкой «Далее». Кнопки ответа из CSV приберегаются на стадию 2,
+    # которую запустит process_answer (см. ветку is_text_change).
+    if phase.get("settings", {}).get("is_text_change"):
+        prefix = f"ans_{session_id}_{phase_idx}_{trial_idx}"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Далее", callback_data=f"{prefix}_next",
+            )]
+        ])
+
     if stimulus_type == "text":
-        body = trial.get("stimulus_content", "")
+        body = trial.get("stimulus_content", "") or ""
         # AJT, режим joint_two_ratings: к стимулу приклеиваем подсказку
         # «оцените 1-е предложение». после первого клика edit_message_text
         # заменит её на «оцените 2-е предложение» (см. process_answer).
         if phase.get("settings", {}).get("joint_two_ratings"):
             body = _ajt_two_ratings_text(body, 1)
+        # Telegram отвергает send_message с пустым text (Bad Request:
+        # message text is empty), даже если есть reply_markup. дефолт-
+        # фолбэк для случаев, когда build_phase оставил stimulus_content
+        # пустым (старые maze-trials, edge-case AJT и т.п.) — это лучше,
+        # чем падение всей сессии.
+        if not body.strip():
+            body = "…"
         msg = await bot.send_message(
             chat_id,
             body,
@@ -205,6 +223,47 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             handle_timeout(bot, chat_id, session, experiment, time_limit, msg.message_id)
         )
         _timeout_tasks[session_id] = task
+
+
+async def _text_change_edit_or_resend(
+    bot: Bot,
+    chat_id: int,
+    session_id: str,
+    message_id: Optional[int],
+    text: str,
+    reply_markup,
+    experiment: dict,
+) -> Optional[int]:
+    """для text_change_detection: попытаться отредактировать сообщение
+    с указанным message_id, иначе отправить новое и взять его в transient.
+    Возвращает message_id, на котором висит актуальный текст — он же будет
+    использован для следующего edit'а.
+
+    Все промпты (text_repeated, «напишите слово в оригинале», «напишите
+    слово в повторном тексте») должны жить в ОДНОМ сообщении, чтобы
+    участник не мог проскроллить вверх и подсмотреть скрытые тексты."""
+    if message_id is not None:
+        try:
+            await bot.edit_message_text(
+                text or "…",
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+            )
+            return message_id
+        except Exception as e:
+            logger.warning("text_change edit_message не удался: %s", e)
+    fallback = await bot.send_message(
+        chat_id, text or "…", reply_markup=reply_markup,
+    )
+    if experiment.get("delete_previous_trials", True):
+        fresh = await repo.get_session(session_id)
+        ids = list((fresh or {}).get("transient_message_ids") or [])
+        ids.append(fallback.message_id)
+        await repo.update_session(session_id, {
+            "transient_message_ids": ids,
+        })
+    return fallback.message_id
 
 
 def _ajt_two_ratings_text(stim_content: str, rating_idx: int) -> str:
@@ -369,6 +428,163 @@ async def process_answer(
 
     response_type = phase.get("response_type", "buttons")
     settings = phase.get("settings", {}) or {}
+
+    # Text Change Detection: проба до 4-х стадий.
+    # Стадия 1 (стартовая, pending=None): показан text_original с одной
+    #   кнопкой «Далее». Клик → reading_rt_ms, edit_message → text_repeated
+    #   с answer-кнопками.
+    # Стадия "decide": клик по answer-кнопке (decision_rt_ms). Если
+    #   участник выбрал «было изменение» (opt1 по конвенции CSV), бот
+    #   спрашивает оригинальное слово. Иначе — финализируем answer.
+    # Стадия "ask_original": текстовый ответ с оригинальным словом →
+    #   запрашиваем слово в повторном тексте.
+    # Стадия "ask_new": текстовый ответ с новым словом → финализируем
+    #   answer со всеми RT и пользовательскими словами.
+    if settings.get("is_text_change"):
+        pending_raw = session.get("pending_text_change")
+        pending = pending_raw if isinstance(pending_raw, dict) else {}
+        stage = pending.get("stage")
+        meta = trial.get("stimulus_metadata") or {}
+
+        # стадия 1 — клик «Далее» по text_original
+        if not stage:
+            shown_at = _stimulus_shown_at.pop(session_id, None)
+            reading_rt = (
+                int((time.time() - shown_at) * 1000) if shown_at else None
+            )
+            text_repeated = (
+                meta.get("text_repeated") or trial.get("stimulus_content", "")
+            ) or "…"
+            kb = build_response_keyboard(
+                trial, phase, session_id, phase_idx, trial_idx,
+            )
+            edit_msg_id = await _text_change_edit_or_resend(
+                bot, chat_id, session_id, message_id, text_repeated, kb,
+                experiment,
+            )
+            await repo.update_session(session_id, {
+                "pending_text_change": {
+                    "reading_rt_ms": reading_rt,
+                    "stage": "decide",
+                    "message_id": edit_msg_id,
+                },
+            })
+            _stimulus_shown_at[session_id] = time.time()
+            return
+
+        # стадия 2 — клик по answer-кнопке
+        if stage == "decide":
+            shown_at = _stimulus_shown_at.pop(session_id, None)
+            decision_rt = (
+                int((time.time() - shown_at) * 1000) if shown_at else None
+            )
+            normalized = raw_response.strip().lower()
+            correct_answer = trial.get("correct_answer")
+            is_correct = None
+            if correct_answer is not None:
+                ca = str(correct_answer).strip().lower()
+                is_correct = normalized == ca
+            change_label = (meta.get("is_change_label") or "").strip().lower()
+            user_says_change = bool(change_label) and normalized == change_label
+
+            if not user_says_change:
+                # «изменения не было» — финализируем сразу, без вопросов
+                answer_data = {
+                    "session_id": session_id,
+                    "experiment_id": session["experiment_id"],
+                    "phase_index": phase_idx,
+                    "trial_index": trial_idx,
+                    "stimulus_id": trial.get("stimulus_content", ""),
+                    "raw_response": raw_response,
+                    "normalized_response": normalized,
+                    "is_correct": is_correct,
+                    "reaction_time_ms": decision_rt,
+                    "timed_out": False,
+                    "timestamp": datetime.utcnow(),
+                    "metadata": {
+                        "list_id": session.get("assigned_list"),
+                        "reading_rt_ms": pending.get("reading_rt_ms"),
+                        "user_change_original": "",
+                        "user_change_new": "",
+                    },
+                }
+                await repo.save_answer(answer_data)
+                await repo.update_session(session_id, {
+                    "pending_text_change": None,
+                })
+                fresh = await repo.get_session(session_id) or session
+                await advance_trial(bot, chat_id, fresh, experiment)
+                return
+
+            # «изменение было» — спрашиваем оригинальное слово.
+            # Редактируем тот же мессадж: убираем кнопки и заменяем
+            # текст на промпт. Так участник не сможет проскроллить и
+            # «подсмотреть» оригинальный/повторный текст.
+            edit_target = pending.get("message_id") or message_id
+            edit_msg_id = await _text_change_edit_or_resend(
+                bot, chat_id, session_id, edit_target,
+                "Напишите слово, которое было в оригинале:", None,
+                experiment,
+            )
+            await repo.update_session(session_id, {
+                "pending_text_change": {
+                    "stage": "ask_original",
+                    "reading_rt_ms": pending.get("reading_rt_ms"),
+                    "decision_rt_ms": decision_rt,
+                    "raw_response": raw_response,
+                    "normalized_response": normalized,
+                    "is_correct": is_correct,
+                    "message_id": edit_msg_id,
+                },
+            })
+            return
+
+        # стадия 3 — пришёл текст с оригинальным словом
+        if stage == "ask_original":
+            edit_msg_id = await _text_change_edit_or_resend(
+                bot, chat_id, session_id, pending.get("message_id"),
+                "Напишите слово в повторном тексте:", None,
+                experiment,
+            )
+            new_pending = dict(pending)
+            new_pending["user_change_original"] = raw_response
+            new_pending["stage"] = "ask_new"
+            new_pending["message_id"] = edit_msg_id
+            await repo.update_session(session_id, {
+                "pending_text_change": new_pending,
+            })
+            return
+
+        # стадия 4 — пришёл текст с новым словом, финализируем
+        if stage == "ask_new":
+            answer_data = {
+                "session_id": session_id,
+                "experiment_id": session["experiment_id"],
+                "phase_index": phase_idx,
+                "trial_index": trial_idx,
+                "stimulus_id": trial.get("stimulus_content", ""),
+                "raw_response": pending.get("raw_response", ""),
+                "normalized_response": pending.get("normalized_response", ""),
+                "is_correct": pending.get("is_correct"),
+                "reaction_time_ms": pending.get("decision_rt_ms"),
+                "timed_out": False,
+                "timestamp": datetime.utcnow(),
+                "metadata": {
+                    "list_id": session.get("assigned_list"),
+                    "reading_rt_ms": pending.get("reading_rt_ms"),
+                    "user_change_original": pending.get(
+                        "user_change_original", ""
+                    ),
+                    "user_change_new": raw_response,
+                },
+            }
+            await repo.save_answer(answer_data)
+            await repo.update_session(session_id, {
+                "pending_text_change": None,
+            })
+            fresh = await repo.get_session(session_id) or session
+            await advance_trial(bot, chat_id, fresh, experiment)
+            return
 
     # AJT joint_two_ratings: один CSV-row → одна проба → ДВА клика по одному
     # сообщению. при первом клике сохраняем оценку первого предложения в
@@ -612,8 +828,50 @@ async def process_answer(
     }
     await repo.save_answer(answer_data)
 
+    # maze: при неправильном выборе пропускаем оставшиеся слова текущего
+    # предложения и сразу прыгаем к началу следующего. предложения
+    # помечены trial.stimulus_metadata.sentence_idx (см. build_maze).
+    if (
+        phase.get("settings", {}).get("is_maze")
+        and is_correct is False
+    ):
+        await _maze_jump_to_next_sentence(
+            bot, chat_id, session, experiment, trial_idx,
+        )
+        return
+
     # переходим к следующей пробе
     await advance_trial(bot, chat_id, session, experiment)
+
+
+async def _maze_jump_to_next_sentence(
+    bot: Bot, chat_id: int, session: dict, experiment: dict,
+    current_trial_idx: int,
+):
+    """найти первую пробу следующего предложения и встать на неё.
+    если предложений больше нет — переходим к следующей фазе/завершаем."""
+    session_id = str(session["_id"])
+    phase_idx = session["current_phase"]
+    phase = experiment["phases"][phase_idx]
+    trials = phase.get("trials", []) or []
+    if current_trial_idx >= len(trials):
+        await advance_phase(bot, chat_id, session, experiment)
+        return
+    current_sid = (
+        trials[current_trial_idx].get("stimulus_metadata", {}) or {}
+    ).get("sentence_idx")
+    target_idx: Optional[int] = None
+    for i in range(current_trial_idx + 1, len(trials)):
+        sid = (trials[i].get("stimulus_metadata", {}) or {}).get("sentence_idx")
+        if sid is not None and sid != current_sid:
+            target_idx = i
+            break
+    if target_idx is None:
+        await advance_phase(bot, chat_id, session, experiment)
+        return
+    await repo.update_session(session_id, {"current_trial": target_idx})
+    fresh = await repo.get_session(session_id) or session
+    await present_trial(bot, chat_id, fresh, experiment)
 
 
 # ── тайм-аут ──

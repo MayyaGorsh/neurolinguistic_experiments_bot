@@ -69,6 +69,8 @@ async def cmd_start_deep_link(
             clear_pending["pending_judgment"] = None
         if existing.get("pending_first_rating"):
             clear_pending["pending_first_rating"] = None
+        if existing.get("pending_text_change"):
+            clear_pending["pending_text_change"] = None
         if clear_pending:
             await repo.update_session(str(existing["_id"]), clear_pending)
             existing = await repo.get_session(str(existing["_id"])) or existing

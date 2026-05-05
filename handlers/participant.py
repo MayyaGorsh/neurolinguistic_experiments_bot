@@ -221,6 +221,15 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
         )
         return
 
+    # text_change в стадиях ask_original/ask_new ждёт от участника
+    # текстовый ответ — клики по более старым кнопкам игнорируем.
+    ptc = session.get("pending_text_change")
+    if isinstance(ptc, dict) and ptc.get("stage") in ("ask_original", "ask_new"):
+        await callback.answer(
+            "Сначала напишите слово сообщением.", show_alert=True,
+        )
+        return
+
     await callback.answer()
 
     experiment = await repo.get_experiment(session["experiment_id"])
@@ -368,19 +377,33 @@ async def on_text_answer(message: types.Message, bot: Bot):
     phase = prepared[session["current_phase"]]
     response_type = phase.get("response_type", "buttons")
 
-    if response_type not in ("open_text", "voice", "buttons_then_text"):
+    # text_change на стадиях ask_original/ask_new ждёт текстовое сообщение
+    # с указанием слова — пропускаем такие тексты сразу в process_answer,
+    # минуя обычные проверки response_type.
+    if _text_change_expects_text(session):
+        pass
+    elif response_type not in ("open_text", "voice", "buttons_then_text"):
         await message.answer("Пожалуйста, используйте кнопки для ответа.")
         return
-
-    # для buttons_then_text текст имеет смысл только после клика по кнопке —
-    # до этого ждём выбор «правильно/неправильно».
-    if response_type == "buttons_then_text" and not session.get("pending_judgment"):
+    elif response_type == "buttons_then_text" and not session.get("pending_judgment"):
+        # для buttons_then_text текст имеет смысл только после клика по кнопке —
+        # до этого ждём выбор «правильно/неправильно».
         await message.answer("Сначала выберите вариант кнопкой.")
         return
 
     await runner.process_answer(
         bot, message.from_user.id, session, exp_copy, message.text
     )
+
+
+def _text_change_expects_text(session: dict) -> bool:
+    """text_change на стадиях ask_original/ask_new ждёт от участника
+    текстовое сообщение с указанием слова из оригинала и из повторного
+    текста."""
+    ptc = session.get("pending_text_change")
+    if not isinstance(ptc, dict):
+        return False
+    return ptc.get("stage") in ("ask_original", "ask_new")
 
 
 # ── обработка голосовых сообщений ──
