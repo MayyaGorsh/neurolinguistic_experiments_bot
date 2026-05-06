@@ -9,6 +9,7 @@ from config import BOT_TOKEN
 from logger import setup_logger
 from handlers import start, researcher, participant, free_form, media_upload, promo, common
 from utils.stale_guard import StaleMenuGuard
+from utils.idle_middleware import ParticipantIdleGuard
 from utils.fsm_bridge import register_storage
 
 logger = setup_logger()
@@ -35,6 +36,12 @@ async def main():
     # сообщения другая — не по message_id, а по полям сессии.
     researcher.router.callback_query.outer_middleware(StaleMenuGuard())
     promo.router.callback_query.outer_middleware(StaleMenuGuard())
+
+    # idle-таймаут участника: если давно ничего не отвечал, abandon-им
+    # сессию на любом следующем действии (см. utils/idle_middleware.py).
+    idle_guard = ParticipantIdleGuard()
+    participant.router.callback_query.outer_middleware(idle_guard)
+    participant.router.message.outer_middleware(idle_guard)
 
     # подключаем роутеры
     dp.include_router(start.router)

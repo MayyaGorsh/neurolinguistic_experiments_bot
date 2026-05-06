@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
 from engine import runner
+from utils.idle_guard import check_and_abandon_if_idle
 
 router = Router()
 logger = logging.getLogger("bot")
@@ -55,6 +56,13 @@ async def cmd_start_deep_link(
     exp_id = str(experiment["_id"])
     existing = await repo.get_active_session(message.from_user.id, exp_id)
     if existing:
+        # idle-таймаут: если участник давно не возвращался, abandon-им
+        # сессию и идём в обычный путь «начать заново».
+        if await check_and_abandon_if_idle(
+            existing, experiment, bot, message.from_user.id,
+        ):
+            existing = None
+    if existing:
         # закрываем чужие in_progress сессии (от других экспериментов),
         # чтобы текст/голос не уходил «не туда» (см. find_active_session).
         await repo.abandon_other_active_sessions(
@@ -71,6 +79,8 @@ async def cmd_start_deep_link(
             clear_pending["pending_first_rating"] = None
         if existing.get("pending_text_change"):
             clear_pending["pending_text_change"] = None
+        if existing.get("pending_interpretation"):
+            clear_pending["pending_interpretation"] = None
         if clear_pending:
             await repo.update_session(str(existing["_id"]), clear_pending)
             existing = await repo.get_session(str(existing["_id"])) or existing

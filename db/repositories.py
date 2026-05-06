@@ -165,6 +165,16 @@ async def update_session(session_id: str, update: dict):
     )
 
 
+async def push_phase_message_id(session_id: str, message_id: int):
+    """добавить message_id в phase_message_ids сессии (атомарный $push).
+    список используется для удаления всех сообщений текущей фазы при
+    переходе к следующей — независимо от настройки delete_previous_trials."""
+    await sessions_col.update_one(
+        {"_id": ObjectId(session_id)},
+        {"$push": {"phase_message_ids": message_id}},
+    )
+
+
 async def mark_session_completed(session_id: str) -> bool:
     """атомарно перевести сессию в completed.
     возвращает True, если этот вызов выиграл гонку (статус был не completed),
@@ -221,6 +231,19 @@ async def get_media(media_id: str) -> Optional[dict]:
 async def get_media_by_experiment(experiment_id: str) -> list:
     cursor = media_col.find({"experiment_id": experiment_id})
     return await cursor.to_list(length=10000)
+
+
+async def get_media_by_filename(experiment_id: str, filename: str) -> Optional[dict]:
+    return await media_col.find_one({
+        "experiment_id": experiment_id, "filename": filename,
+    })
+
+
+async def update_media(media_id: str, update: dict):
+    await media_col.update_one(
+        {"_id": ObjectId(media_id)},
+        {"$set": update},
+    )
 
 
 # ── рассылки ──

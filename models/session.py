@@ -54,6 +54,7 @@ class ParticipantSession:
     demographics: dict = field(default_factory=dict)
     started_at: datetime = field(default_factory=datetime.utcnow)
     finished_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None  # для idle-таймаута
 
     def to_dict(self):
         return {
@@ -67,6 +68,7 @@ class ParticipantSession:
             "demographics": self.demographics,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "last_activity_at": self.last_activity_at,
         }
 
     @classmethod

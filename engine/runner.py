@@ -22,6 +22,8 @@ from aiogram.types import (
 from bson import ObjectId
 
 from db import repositories as repo
+from engine import audio as audio_util
+from utils.idle_guard import touch_session
 
 logger = logging.getLogger("bot")
 
@@ -54,6 +56,39 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     trial_idx = session["current_trial"]
     phases = experiment["phases"]
     session_id = str(session["_id"])
+
+    # сбрасываем idle-таймер: показ нового стимула считается активностью,
+    # иначе долгое раздумье участника превращалось бы в «бездействие».
+    await touch_session(session_id)
+
+    # граница фазы: при переходе к следующей фазе (но не к «фантомной»
+    # фазе за концом эксперимента) удаляем все сообщения предыдущей фазы
+    # — стимулы, инструкции, промпты, уведомления тайм-аута. это работает
+    # независимо от настройки delete_previous_trials: даже если внутри
+    # фазы все стимулы накапливаются, на новой фазе чат «очищается».
+    if phase_idx < len(phases):
+        stored_phase_idx = session.get("phase_msg_phase_idx")
+        if stored_phase_idx is None:
+            await repo.update_session(session_id, {
+                "phase_msg_phase_idx": phase_idx,
+            })
+            session["phase_msg_phase_idx"] = phase_idx
+        elif stored_phase_idx != phase_idx:
+            old_ids = list(session.get("phase_message_ids") or [])
+            if old_ids:
+                await _delete_transient(bot, chat_id, old_ids)
+            await repo.update_session(session_id, {
+                "phase_message_ids": [],
+                "phase_msg_phase_idx": phase_idx,
+                # после очистки всей фазы транзиентный список тоже
+                # становится бессмысленным — обнуляем, чтобы следующее
+                # delete_previous-удаление не пыталось ещё раз дёргать
+                # уже удалённые сообщения.
+                "transient_message_ids": [],
+            })
+            session["phase_message_ids"] = []
+            session["phase_msg_phase_idx"] = phase_idx
+            session["transient_message_ids"] = []
 
     # если включён режим «чистить предыдущие пробы» — стираем сообщения
     # бота от предыдущей пробы/инструкции/тайм-аута перед показом новой.
@@ -99,6 +134,9 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
         instr_msg = await bot.send_message(
             chat_id, phase["instruction"], reply_markup=kb
         )
+        # инструкция фазы — всегда в phase_message_ids, чтобы её удалили
+        # на границе со следующей фазой (даже если delete_previous=False).
+        await repo.push_phase_message_id(session_id, instr_msg.message_id)
         # запоминаем id, чтобы удалить инструкцию вместе с следующим
         # переходом, если включён режим очистки.
         if delete_previous:
@@ -136,6 +174,19 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             )]
         ])
 
+    # Interpretation Generation: первая стадия — стимул с одной кнопкой
+    # «Далее». response_type=open_text сам по себе не даёт клавиатуры —
+    # без этой кнопки участник не понимает, что делать. После клика
+    # process_answer (ветка is_interpretation) попросит написать
+    # интерпретацию текстом.
+    if phase.get("settings", {}).get("is_interpretation"):
+        prefix = f"ans_{session_id}_{phase_idx}_{trial_idx}"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Далее", callback_data=f"{prefix}_next",
+            )]
+        ])
+
     if stimulus_type == "text":
         body = trial.get("stimulus_content", "") or ""
         # AJT, режим joint_two_ratings: к стимулу приклеиваем подсказку
@@ -156,24 +207,27 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             reply_markup=keyboard,
         )
     elif stimulus_type == "image":
+        # caption намеренно не передаём: stimulus_content для медиа-
+        # шаблонов — это имя файла из CSV, оно не должно показываться
+        # участнику.
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
         msg = await bot.send_photo(
             chat_id, file_id,
-            caption=trial.get("stimulus_content", ""),
             reply_markup=keyboard,
         )
     elif stimulus_type == "audio":
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
+        # title/performer = " " — иначе Telegram выводит имя файла
+        # как заголовок аудио-плеера.
         msg = await bot.send_audio(
             chat_id, file_id,
-            caption=trial.get("stimulus_content", ""),
+            title=" ", performer=" ",
             reply_markup=keyboard,
         )
     elif stimulus_type == "video":
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
         msg = await bot.send_video(
             chat_id, file_id,
-            caption=trial.get("stimulus_content", ""),
             reply_markup=keyboard,
         )
     else:
@@ -186,13 +240,81 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     # фиксируем момент показа стимула
     _stimulus_shown_at[session_id] = time.time()
 
+    # стимул — в phase_message_ids: при переходе к следующей фазе он
+    # будет удалён независимо от delete_previous_trials.
+    await repo.push_phase_message_id(session_id, msg.message_id)
+
     # обновляем статус сессии
     update_fields = {
         "status": "in_progress",
         "current_phase": phase_idx,
         "current_trial": trial_idx,
     }
+    # для аудио-стимулов в audio-шаблонах не кладём msg в transient:
+    # удаление advance-ом обрывает звук на полуслове, если участник
+    # ответил быстро. вместо этого ставим отложенное удаление по
+    # длительности файла (включая запеканную тишину). длительность
+    # читаем из media-записи (она запоминается на upload) — это
+    # надёжнее, чем msg.audio.duration: для file_id document-типа
+    # Telegram возвращает msg.document, и .audio будет None.
+    is_audio_template = experiment.get("template_type") in (
+        "forced_choice", "sentence_repetition",
+    )
+    audio_auto_advance = False
+    if delete_previous and is_audio_template and stimulus_type == "audio":
+        exp_id_str = str(experiment.get("_id", ""))
+        stim_filename = trial.get("stimulus_content", "")
+        media_rec = await repo.get_media_by_filename(exp_id_str, stim_filename)
+        duration_ms = int((media_rec or {}).get("duration_ms", 0) or 0)
+
+        # 1-й fallback: ответ Telegram.
+        if duration_ms <= 0 and getattr(msg, "audio", None) is not None:
+            duration_ms = (msg.audio.duration or 0) * 1000
+
+        # 2-й fallback: считаем pydub-ом из самого файла и кэшируем
+        # обратно в media (для старых записей без duration_ms или для
+        # document file_id, у которого msg.audio=None).
+        if duration_ms <= 0 and media_rec:
+            src_file_id = (
+                media_rec.get("file_id") or media_rec.get("original_file_id")
+            )
+            if src_file_id:
+                try:
+                    file = await bot.download(src_file_id)
+                    audio_bytes = file.read()
+                    fmt = (stim_filename.rsplit(".", 1)[-1] or "mp3").lower()
+                    if fmt not in ("mp3", "ogg", "wav", "m4a", "opus"):
+                        fmt = "mp3"
+                    duration_ms = audio_util.get_duration_ms(audio_bytes, fmt=fmt)
+                    if duration_ms > 0:
+                        await repo.update_media(
+                            str(media_rec["_id"]),
+                            {"duration_ms": duration_ms},
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "не удалось вычислить длительность %s: %s",
+                        stim_filename, e,
+                    )
+
+        if duration_ms > 0:
+            cancel_timeout(session_id)
+            task = asyncio.create_task(handle_audio_finished(
+                bot, chat_id, session, experiment, duration_ms, msg.message_id,
+            ))
+            _timeout_tasks[session_id] = task
+            audio_auto_advance = True
+            # logger.info(
+            #     "audio auto-advance armed: msg=%s duration_ms=%s",
+            #     msg.message_id, duration_ms,
+            # )
     if delete_previous:
+        # сохраняем msg в transient — если участник нажмёт кнопку
+        # раньше срабатывания таймера, advance_trial → present_trial
+        # удалит его через обычную чистку. таймер при этом cancel_timeout
+        # отменяет (см. process_answer). если же таймер сработает первым,
+        # он сам удалит сообщение, а transient-чистка следующей пробы
+        # вызовет delete_message повторно — это no-op, ошибки гасятся.
         update_fields["transient_message_ids"] = [msg.message_id]
     await repo.update_session(session_id, update_fields)
 
@@ -213,10 +335,17 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     # handle_timeout одинаково корректно сохраняет «пропуск» и для buttons,
     # и для open_text/voice/likert/multiple_choice; process_answer отменяет
     # таймер, если респондент успел ответить.
+    # если audio_auto_advance уже занял слот таймера длительностью аудио,
+    # дополнительный time_limit-таймер не запускаем — иначе они будут
+    # бороться за один и тот же _timeout_tasks[session_id].
     time_limit = phase.get("time_limit") or experiment.get("time_limit")
-    if time_limit and response_type in (
-        "buttons", "buttons_then_text", "open_text", "voice", "likert",
-        "multiple_choice",
+    if (
+        not audio_auto_advance
+        and time_limit
+        and response_type in (
+            "buttons", "buttons_then_text", "open_text", "voice", "likert",
+            "multiple_choice",
+        )
     ):
         cancel_timeout(session_id)
         task = asyncio.create_task(
@@ -256,6 +385,7 @@ async def _text_change_edit_or_resend(
     fallback = await bot.send_message(
         chat_id, text or "…", reply_markup=reply_markup,
     )
+    await repo.push_phase_message_id(session_id, fallback.message_id)
     if experiment.get("delete_previous_trials", True):
         fresh = await repo.get_session(session_id)
         ids = list((fresh or {}).get("transient_message_ids") or [])
@@ -428,6 +558,96 @@ async def process_answer(
 
     response_type = phase.get("response_type", "buttons")
     settings = phase.get("settings", {}) or {}
+
+    # Interpretation Generation: 2-стадийная проба.
+    # Стадия 1 (pending=None): пришёл клик «Далее» по стимулу — фиксируем
+    #   reading_rt_ms, шлём промпт «Запишите интерпретацию» и ставим
+    #   pending_interpretation. Текст ждём от участника отдельным сообщением.
+    # Стадия "awaiting_text": пришёл текст — сохраняем answer (raw_response =
+    #   набранная интерпретация, RT = время ввода до отправки), чистим
+    #   pending, advance_trial.
+    if settings.get("is_interpretation"):
+        pending_raw = session.get("pending_interpretation")
+        pending = pending_raw if isinstance(pending_raw, dict) else None
+
+        if not pending:
+            # стадия 1 — клик «Далее»
+            if raw_response != "_next_":
+                # для интерпретации до клика «Далее» текст не принимаем —
+                # участник мог опередить и ответить голосом/текстом раньше.
+                return
+            shown_at = _stimulus_shown_at.pop(session_id, None)
+            reading_rt = (
+                int((time.time() - shown_at) * 1000) if shown_at else None
+            )
+            # для interpretation_generation стимул удаляем сразу после
+            # клика «Далее» — независимо от delete_previous_trials. так
+            # участник сосредоточен на промпте и не подсматривает
+            # предложение, формулируя интерпретацию.
+            if message_id is not None:
+                try:
+                    await bot.delete_message(chat_id, message_id)
+                except Exception:
+                    pass
+            prompt_msg = await bot.send_message(
+                chat_id,
+                "Запишите, как вы понимаете смысл этого предложения:",
+            )
+            await repo.push_phase_message_id(session_id, prompt_msg.message_id)
+            # transient очищаем (стимула там больше нет — мы его удалили)
+            # и кладём туда промпт, чтобы present_trial следующей пробы
+            # его прибрал (если включена очистка). прямой delete_message
+            # промпта на стадии 2 — ниже, безусловно.
+            await repo.update_session(session_id, {
+                "transient_message_ids": [prompt_msg.message_id],
+                "pending_interpretation": {
+                    "stage": "awaiting_text",
+                    "reading_rt_ms": reading_rt,
+                    "prompt_msg_id": prompt_msg.message_id,
+                },
+            })
+            # старт отсчёта RT для текстового ввода
+            _stimulus_shown_at[session_id] = time.time()
+            return
+
+        # стадия 2 — пришёл текст с интерпретацией
+        shown_at = _stimulus_shown_at.pop(session_id, None)
+        write_rt = int((time.time() - shown_at) * 1000) if shown_at else None
+        # удаляем промпт «Запишите…» — пробу полностью «закрываем» в чате,
+        # независимо от delete_previous_trials. ответ участника удалить
+        # нельзя (Telegram не даёт боту удалять чужие сообщения в личке),
+        # он останется в чате как запись его интерпретации.
+        prompt_msg_id = pending.get("prompt_msg_id")
+        if prompt_msg_id is not None:
+            try:
+                await bot.delete_message(chat_id, prompt_msg_id)
+            except Exception:
+                pass
+        answer_data = {
+            "session_id": session_id,
+            "experiment_id": session["experiment_id"],
+            "phase_index": phase_idx,
+            "trial_index": trial_idx,
+            "stimulus_id": trial.get("stimulus_content", ""),
+            "raw_response": raw_response,
+            "normalized_response": raw_response.strip(),
+            "is_correct": None,
+            "reaction_time_ms": write_rt,
+            "timed_out": False,
+            "timestamp": datetime.utcnow(),
+            "metadata": {
+                "list_id": session.get("assigned_list"),
+                "reading_rt_ms": pending.get("reading_rt_ms"),
+            },
+        }
+        await repo.save_answer(answer_data)
+        await repo.update_session(session_id, {
+            "pending_interpretation": None,
+            "transient_message_ids": [],
+        })
+        fresh = await repo.get_session(session_id) or session
+        await advance_trial(bot, chat_id, fresh, experiment)
+        return
 
     # Text Change Detection: проба до 4-х стадий.
     # Стадия 1 (стартовая, pending=None): показан text_original с одной
@@ -632,6 +852,9 @@ async def process_answer(
                     fallback = await bot.send_message(
                         chat_id, new_text, reply_markup=new_kb,
                     )
+                    await repo.push_phase_message_id(
+                        session_id, fallback.message_id,
+                    )
                     if experiment.get("delete_previous_trials", True):
                         fresh = await repo.get_session(session_id)
                         ids = list((fresh or {}).get("transient_message_ids") or [])
@@ -748,6 +971,7 @@ async def process_answer(
                 chat_id,
                 "Опишите коротко, почему вы так решили:",
             )
+            await repo.push_phase_message_id(session_id, prompt_msg.message_id)
             # держим приглашение в transient, чтобы оно удалилось вместе
             # с подтверждением выбора при переходе к следующей пробе
             if experiment.get("delete_previous_trials", True):
@@ -876,6 +1100,69 @@ async def _maze_jump_to_next_sentence(
 
 # ── тайм-аут ──
 
+async def handle_audio_finished(
+    bot: Bot, chat_id: int, session: dict, experiment: dict,
+    duration_ms: int, message_id: int,
+):
+    """для audio-шаблонов с delete_previous=True: подождать, пока файл
+    отыграет, удалить сообщение со стимулом и автоматически перейти
+    к следующей пробе. если участник успел нажать кнопку раньше, его
+    process_answer вызывает cancel_timeout — наш await sleep ловит
+    CancelledError и выходит, не вмешиваясь."""
+    session_id = str(session["_id"])
+    try:
+        await asyncio.sleep(duration_ms / 1000 + 0.5)
+    except asyncio.CancelledError:
+        return
+
+    _timeout_tasks.pop(session_id, None)
+
+    # удаляем сообщение со стимулом (best effort).
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+    # проверяем, что сессия всё ещё на той пробе, для которой был запланирован
+    # таймер — иначе advance был сделан кем-то ещё (например параллельным
+    # хендлером ответа), и второй advance сломает прогресс.
+    fresh = await repo.get_session(session_id)
+    if not fresh:
+        return
+    if (
+        fresh.get("current_phase") != session["current_phase"]
+        or fresh.get("current_trial") != session["current_trial"]
+    ):
+        return
+    if fresh.get("status") == "completed":
+        return
+
+    phase_idx = session["current_phase"]
+    trial_idx = session["current_trial"]
+    phase = experiment["phases"][phase_idx]
+    trial = phase["trials"][trial_idx]
+
+    _stimulus_shown_at.pop(session_id, None)
+
+    # участник не успел ответить — сохраняем «пустой» ответ как timed_out
+    answer_data = {
+        "session_id": session_id,
+        "experiment_id": session["experiment_id"],
+        "phase_index": phase_idx,
+        "trial_index": trial_idx,
+        "stimulus_id": trial.get("stimulus_content", ""),
+        "raw_response": "",
+        "normalized_response": "",
+        "is_correct": None,
+        "reaction_time_ms": duration_ms,
+        "timed_out": True,
+        "timestamp": datetime.utcnow(),
+        "metadata": {"list_id": fresh.get("assigned_list")},
+    }
+    await repo.save_answer(answer_data)
+    await advance_trial(bot, chat_id, fresh, experiment)
+
+
 async def handle_timeout(
     bot: Bot, chat_id: int, session: dict, experiment: dict,
     time_limit: int, message_id: int,
@@ -920,6 +1207,7 @@ async def handle_timeout(
     await repo.save_answer(answer_data)
 
     timeout_msg = await bot.send_message(chat_id, "Время вышло")
+    await repo.push_phase_message_id(session_id, timeout_msg.message_id)
 
     # обновляем сессию и идем дальше; если включена очистка — добавляем
     # «Время вышло» к списку transient, чтобы следующий present_trial

@@ -340,3 +340,98 @@
 2026-05-05 23:09:56 | INFO    | bot | сессия 69fa4e947dc5b3e2822d12ba: user=7828426430, exp=69fa4416c7eaee5fc89b6c0c, list=None
 2026-05-05 23:10:30 | INFO    | bot | сессия 69fa4e947dc5b3e2822d12ba завершена
 2026-05-05 23:15:09 | INFO    | bot | бот остановлен
+2026-05-06 16:15:33 | INFO    | bot | бот запущен
+2026-05-06 16:16:51 | INFO    | bot | создан эксперимент 69fb3f439a1d51710c333485
+2026-05-06 16:16:51 | INFO    | bot | эксперимент 69fb3f439a1d51710c333485 создан пользователем 540373857
+2026-05-06 16:17:38 | INFO    | bot | эксперимент 69fb3f439a1d51710c333485 обновлён пользователем 540373857
+2026-05-06 16:21:23 | INFO    | bot | создан эксперимент 69fb40539a1d51710c333486
+2026-05-06 16:21:23 | INFO    | bot | эксперимент 69fb40539a1d51710c333486 создан пользователем 540373857
+2026-05-06 16:39:26 | INFO    | bot | бот остановлен
+2026-05-06 16:39:34 | INFO    | bot | бот запущен
+2026-05-06 16:39:50 | INFO    | bot | deep link от 7828426430: exp_qKkyo1krPqs
+2026-05-06 16:39:52 | INFO    | bot | сессия 69fb44a89074e9a699ff1d2b: user=7828426430, exp=69fb3f439a1d51710c333485, list=None
+2026-05-06 16:41:59 | INFO    | bot | сессия 69fb44a89074e9a699ff1d2b завершена
+2026-05-06 16:48:04 | INFO    | bot | бот остановлен
+2026-05-06 16:48:11 | INFO    | bot | бот запущен
+2026-05-06 16:48:39 | INFO    | bot | deep link от 7828426430: exp_qKkyo1krPqs
+2026-05-06 16:48:43 | INFO    | bot | сессия 69fb46bb3884d892a74fab41: user=7828426430, exp=69fb3f439a1d51710c333485, list=None
+2026-05-06 16:49:14 | INFO    | bot | сессия 69fb46bb3884d892a74fab41 завершена
+2026-05-06 16:51:07 | INFO    | bot | эксперимент 69fb3f439a1d51710c333485 обновлён пользователем 540373857
+2026-05-06 16:51:23 | INFO    | bot | deep link от 7828426430: exp_qKkyo1krPqs
+2026-05-06 16:51:26 | INFO    | bot | сессия 69fb475e3884d892a74fab50: user=7828426430, exp=69fb3f439a1d51710c333485, list=None
+2026-05-06 16:52:23 | INFO    | bot | deep link от 7828426430: exp_qKkyo1krPqs
+2026-05-06 16:52:25 | INFO    | bot | сессия 69fb47993884d892a74fab57: user=7828426430, exp=69fb3f439a1d51710c333485, list=None
+2026-05-06 16:52:47 | INFO    | bot | deep link от 7828426430: exp_qKkyo1krPqs
+2026-05-06 17:08:16 | INFO    | bot | бот остановлен
+2026-05-06 17:08:25 | INFO    | bot | бот запущен
+2026-05-06 17:08:38 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-06 17:09:05 | DEBUG   | bot | stale callback от 540373857: msg=1332, active=1336, data=instr_ok_69fb4b6e18ecd868f5e1cb9f_0
+2026-05-06 17:09:28 | INFO    | bot | сессия 69fb4b6e18ecd868f5e1cb9f завершена
+2026-05-06 17:46:54 | INFO    | bot | создан эксперимент 69fb545e18ecd868f5e1cba6
+2026-05-06 17:46:54 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 создан пользователем 540373857
+2026-05-06 17:56:59 | INFO    | bot | бот остановлен
+2026-05-06 17:57:09 | INFO    | bot | бот запущен
+2026-05-06 18:03:54 | INFO    | bot | бот остановлен
+2026-05-06 18:04:03 | INFO    | bot | бот запущен
+2026-05-06 18:04:39 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-06 18:04:41 | DEBUG   | bot | stale callback от 540373857: msg=1402, active=1404, data=ans_69fb587b63ea0eb435d2c10f_0_0_1
+2026-05-06 18:05:18 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 обновлён пользователем 540373857
+2026-05-06 18:06:20 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 обновлён пользователем 540373857
+2026-05-06 18:11:32 | INFO    | bot | бот остановлен
+2026-05-06 18:11:39 | INFO    | bot | бот запущен
+2026-05-06 18:13:26 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 обновлён пользователем 540373857
+2026-05-06 18:13:42 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 обновлён пользователем 540373857
+2026-05-06 18:20:16 | INFO    | bot | бот остановлен
+2026-05-06 18:20:27 | INFO    | bot | бот запущен
+2026-05-06 18:20:32 | INFO    | bot | эксперимент 69fb545e18ecd868f5e1cba6 обновлён пользователем 540373857
+2026-05-06 18:22:10 | INFO    | bot | создан эксперимент 69fb5ca274596b08521713fd
+2026-05-06 18:22:10 | INFO    | bot | эксперимент 69fb5ca274596b08521713fd создан пользователем 540373857
+2026-05-06 18:24:38 | INFO    | bot | deep link от 7828426430: exp_4a_4rqXHhg4
+2026-05-06 18:24:41 | INFO    | bot | сессия 69fb5d3974596b0852171404: user=7828426430, exp=69fb5ca274596b08521713fd, list=None
+2026-05-06 18:31:57 | INFO    | bot | эксперимент 69fb5ca274596b08521713fd обновлён пользователем 540373857
+2026-05-06 18:37:57 | INFO    | bot | бот остановлен
+2026-05-06 18:38:05 | INFO    | bot | бот запущен
+2026-05-06 18:38:08 | INFO    | bot | deep link от 7828426430: exp_4a_4rqXHhg4
+2026-05-06 18:43:03 | INFO    | bot | бот остановлен
+2026-05-06 18:43:11 | INFO    | bot | бот запущен
+2026-05-06 18:44:40 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-06 18:45:45 | INFO    | bot | эксперимент 69fb5ca274596b08521713fd обновлён пользователем 540373857
+2026-05-06 18:50:31 | INFO    | bot | бот остановлен
+2026-05-06 18:50:38 | INFO    | bot | бот запущен
+2026-05-06 18:51:01 | INFO    | bot | deep link от 7828426430: exp_4a_4rqXHhg4
+2026-05-06 18:51:05 | INFO    | bot | сессия 69fb6369ef8769a47e977cc4: user=7828426430, exp=69fb5ca274596b08521713fd, list=None
+2026-05-06 18:51:11 | INFO    | bot | scheduled audio delete: msg=1521 duration_ms=11680
+2026-05-06 18:51:15 | INFO    | bot | scheduled audio delete: msg=1522 duration_ms=11632
+2026-05-06 18:51:18 | INFO    | bot | scheduled audio delete: msg=1523 duration_ms=11680
+2026-05-06 18:51:43 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 7828426430
+2026-05-06 18:51:50 | INFO    | bot | deep link от 7828426430: exp_4a_4rqXHhg4
+2026-05-06 18:51:53 | INFO    | bot | сессия 69fb6399ef8769a47e977cc7: user=7828426430, exp=69fb5ca274596b08521713fd, list=None
+2026-05-06 18:51:56 | INFO    | bot | scheduled audio delete: msg=1529 duration_ms=11632
+2026-05-06 18:52:05 | INFO    | bot | scheduled audio delete: msg=1530 duration_ms=11656
+2026-05-06 18:52:07 | INFO    | bot | scheduled audio delete: msg=1531 duration_ms=11560
+2026-05-06 18:52:10 | INFO    | bot | scheduled audio delete: msg=1532 duration_ms=11656
+2026-05-06 18:52:14 | INFO    | bot | scheduled audio delete: msg=1533 duration_ms=11680
+2026-05-06 18:52:22 | INFO    | bot | scheduled audio delete: msg=1534 duration_ms=10840
+2026-05-06 18:57:36 | INFO    | bot | бот остановлен
+2026-05-06 18:57:45 | INFO    | bot | бот запущен
+2026-05-06 18:57:48 | INFO    | bot | deep link от 7828426430: exp_4a_4rqXHhg4
+2026-05-06 18:57:51 | INFO    | bot | сессия 69fb64ff5b6534a81c7fe636: user=7828426430, exp=69fb5ca274596b08521713fd, list=None
+2026-05-06 18:57:53 | INFO    | bot | audio auto-advance armed: msg=1539 duration_ms=11560
+2026-05-06 18:57:58 | INFO    | bot | audio auto-advance armed: msg=1540 duration_ms=11656
+2026-05-06 18:58:02 | INFO    | bot | audio auto-advance armed: msg=1541 duration_ms=11656
+2026-05-06 18:58:06 | INFO    | bot | audio auto-advance armed: msg=1542 duration_ms=11680
+2026-05-06 18:58:10 | INFO    | bot | audio auto-advance armed: msg=1543 duration_ms=11704
+2026-05-06 18:58:23 | INFO    | bot | audio auto-advance armed: msg=1544 duration_ms=11560
+2026-05-06 18:58:29 | INFO    | bot | audio auto-advance armed: msg=1545 duration_ms=11704
+2026-05-06 18:58:30 | INFO    | bot | audio auto-advance armed: msg=1546 duration_ms=11656
+2026-05-06 18:58:31 | INFO    | bot | audio auto-advance armed: msg=1547 duration_ms=10840
+2026-05-06 18:58:34 | INFO    | bot | audio auto-advance armed: msg=1548 duration_ms=11632
+2026-05-06 18:58:36 | INFO    | bot | audio auto-advance armed: msg=1549 duration_ms=11680
+2026-05-06 18:58:38 | INFO    | bot | audio auto-advance armed: msg=1550 duration_ms=10840
+2026-05-06 18:58:40 | INFO    | bot | audio auto-advance armed: msg=1551 duration_ms=11560
+2026-05-06 18:58:42 | INFO    | bot | audio auto-advance armed: msg=1552 duration_ms=11704
+2026-05-06 18:58:44 | INFO    | bot | audio auto-advance armed: msg=1553 duration_ms=11632
+2026-05-06 18:58:47 | INFO    | bot | audio auto-advance armed: msg=1554 duration_ms=11632
+2026-05-06 18:58:49 | INFO    | bot | audio auto-advance armed: msg=1555 duration_ms=11680
+2026-05-06 18:58:52 | INFO    | bot | audio auto-advance armed: msg=1556 duration_ms=10840
+2026-05-06 18:58:54 | INFO    | bot | сессия 69fb64ff5b6534a81c7fe636 завершена

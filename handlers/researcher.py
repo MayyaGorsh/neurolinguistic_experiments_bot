@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 
 from db import repositories as repo
+from engine import audio as audio_util
 from utils import export as export_util
 from utils import csv_parser
 from utils.ui import render_screen as _render_screen
@@ -189,6 +190,14 @@ def _collect_settings_state(data: dict) -> dict:
     demo_mode = data.get("demographics_mode", "off")
     demo_custom = data.get("demographics_custom", [])
     time_limit = data.get("time_limit", None)
+    idle_timeout = int(data.get("idle_timeout_seconds", 300) or 0)
+    idle_label = (
+        "продолжать с того же места" if idle_timeout <= 0
+        else f"{idle_timeout} сек"
+    )
+    audio_silence = int(data.get("audio_silence_seconds", 0) or 0)
+    audio_silence_label = "нет" if audio_silence <= 0 else f"{audio_silence} сек"
+    is_audio_template = tmpl in ("forced_choice", "sentence_repetition")
     allow_repeat = data.get("allow_repeat", False)
     demo_label = {
         "off": "нет",
@@ -209,6 +218,11 @@ def _collect_settings_state(data: dict) -> dict:
         "demo_label": demo_label,
         "time_limit": time_limit,
         "timeout_value": f"{time_limit} сек" if time_limit else "нет",
+        "idle_timeout": idle_timeout,
+        "idle_label": idle_label,
+        "audio_silence": audio_silence,
+        "audio_silence_label": audio_silence_label,
+        "is_audio_template": is_audio_template,
         "allow_repeat": allow_repeat,
         "presentation_mode": presentation_mode,
         "presentation_label": presentation_label,
@@ -219,33 +233,64 @@ def _collect_settings_state(data: dict) -> dict:
     }
 
 
+def _settings_rows(s: dict) -> list[tuple[str, str, str]]:
+    """единый источник настроек: список (label, value, callback_data),
+    отфильтрованный по применимости к текущему шаблону.
+
+    используется и в сводке show_config_menu, и в кнопках
+    show_settings_submenu — чтобы оба экрана показывали один и тот же
+    набор и не разъезжались при добавлении новых настроек."""
+    rows: list[tuple[str, str, str]] = [
+        ("Рандомизация", "да" if s["randomize"] else "нет", "cfg_randomize"),
+    ]
+    if s["has_buttons"]:
+        rows.append((
+            "Рандомизация позиций кнопок",
+            "да" if s["randomize_buttons"] else "нет",
+            "cfg_randomize_buttons",
+        ))
+    if s["ajt_show_presentation"]:
+        rows.append((
+            "Режим подачи", s["presentation_label"], "cfg_presentation_mode",
+        ))
+    rows += [
+        (
+            "Чистить предыдущие пробы",
+            "да" if s["delete_previous"] else "нет",
+            "cfg_delete_previous",
+        ),
+        ("Распределение по листам", s["lists_label"], "cfg_lists"),
+        ("Демография", s["demo_label"], "cfg_demographics"),
+        ("Тайм-аут", s["timeout_value"], "cfg_timeout"),
+        ("Перерыв до сброса", s["idle_label"], "cfg_idle_timeout"),
+    ]
+    if s["is_audio_template"]:
+        rows.append((
+            "Тишина в аудио", s["audio_silence_label"], "cfg_audio_silence",
+        ))
+    rows.append((
+        "Повторное прохождение",
+        "да" if s["allow_repeat"] else "нет",
+        "cfg_repeat",
+    ))
+    return rows
+
+
 async def show_config_menu(message_or_cb, state: FSMContext):
-    """top-level меню: краткая сводка настроек + 6 действий.
-    подменю с самими тогглами — show_settings_submenu (из «Настроить
-    эксперимент»). сводка моноширинная (<pre>) ради ровных колонок —
-    кнопки в Telegram рендерятся пропорциональным шрифтом, в тексте
-    сообщения с <pre> можно выровнять по символам."""
+    """top-level меню: краткая сводка настроек + действия.
+    тогглы — в show_settings_submenu. сводка моноширинная (<pre>) ради
+    ровных колонок — кнопки Telegram рендерятся пропорционально, в
+    <pre> можно выровнять по символам.
+
+    список строк в сводке = список тогглов в подменю (один источник —
+    _settings_rows). если настройка не применима к шаблону, она не
+    отображается ни в сводке, ни в подменю."""
     data = await state.get_data()
     s = _collect_settings_state(data)
     tmpl = s["tmpl"]
 
-    summary_rows: list[tuple[str, str]] = [
-        ("Рандомизация", "да" if s["randomize"] else "нет"),
-    ]
-    if s["has_buttons"]:
-        summary_rows.append((
-            "Рандомизация позиций кнопок",
-            "да" if s["randomize_buttons"] else "нет",
-        ))
-    if s["ajt_show_presentation"]:
-        summary_rows.append(("Режим подачи", s["presentation_label"]))
-    summary_rows += [
-        ("Чистить предыдущие пробы", "да" if s["delete_previous"] else "нет"),
-        ("Распределение по листам", s["lists_label"]),
-        ("Демография", s["demo_label"]),
-        ("Тайм-аут", s["timeout_value"]),
-        ("Повторное прохождение", "да" if s["allow_repeat"] else "нет"),
-    ]
+    rows = _settings_rows(s)
+    summary_rows = [(label, value) for label, value, _ in rows]
     label_w = max(len(label) for label, _ in summary_rows) + 2
     summary_lines = [f"{label.ljust(label_w)}{value}" for label, value in summary_rows]
     summary_block = "<pre>" + "\n".join(summary_lines) + "</pre>"
@@ -286,7 +331,10 @@ async def show_config_menu(message_or_cb, state: FSMContext):
 async def show_settings_submenu(message_or_cb, state: FSMContext):
     """подменю «Настроить эксперимент»: все тогглы со значениями + кнопки
     кастомизации (Кнопки ответа / Шкала ответа) — для тех шаблонов, где
-    они применимы."""
+    они применимы.
+
+    набор тогглов берётся из _settings_rows — того же источника, что и
+    сводка в верхнем меню; экраны не могут разъехаться."""
     data = await state.get_data()
     s = _collect_settings_state(data)
     tmpl = s["tmpl"]
@@ -295,41 +343,9 @@ async def show_settings_submenu(message_or_cb, state: FSMContext):
 
     buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
-            text=f"Рандомизация — {'да' if s['randomize'] else 'нет'}",
-            callback_data="cfg_randomize",
-        )],
-    ]
-    if s["has_buttons"]:
-        buttons.append([InlineKeyboardButton(
-            text=f"Рандомизация позиций кнопок — {'да' if s['randomize_buttons'] else 'нет'}",
-            callback_data="cfg_randomize_buttons",
-        )])
-    if s["ajt_show_presentation"]:
-        buttons.append([InlineKeyboardButton(
-            text=f"Режим подачи — {s['presentation_label']}",
-            callback_data="cfg_presentation_mode",
-        )])
-    buttons += [
-        [InlineKeyboardButton(
-            text=f"Чистить предыдущие пробы — {'да' if s['delete_previous'] else 'нет'}",
-            callback_data="cfg_delete_previous",
-        )],
-        [InlineKeyboardButton(
-            text=f"Распределение по листам — {s['lists_label']}",
-            callback_data="cfg_lists",
-        )],
-        [InlineKeyboardButton(
-            text=f"Демография — {s['demo_label']}",
-            callback_data="cfg_demographics",
-        )],
-        [InlineKeyboardButton(
-            text=f"Тайм-аут — {s['timeout_value']}",
-            callback_data="cfg_timeout",
-        )],
-        [InlineKeyboardButton(
-            text=f"Повторное прохождение — {'да' if s['allow_repeat'] else 'нет'}",
-            callback_data="cfg_repeat",
-        )],
+            text=f"{label} — {value}", callback_data=cb,
+        )]
+        for label, value, cb in _settings_rows(s)
     ]
 
     # template-specific: «🔤 Кнопки ответа» / «📊 Шкала ответа»
@@ -426,6 +442,14 @@ _CONFIG_HELP_PAGE_2 = (
     "Тайм-аут в этих пробах тоже считается до отправки сообщения: "
     "если за N секунд участник не <i>отправил</i> ответ — ставится "
     "пропуск, даже если он печатал или говорил.\n\n"
+    "<b>⏸ Перерыв до сброса</b>\n"
+    "Сколько секунд бездействия можно допустить, прежде чем сессия "
+    "участника закроется. Если участник отошёл, а потом вернулся "
+    "(перешёл по ссылке снова или просто нажал кнопку в чате) и с "
+    "момента последней активности прошло больше этого значения — "
+    "сессия помечается «прервана» и эксперимент придётся начать заново. "
+    "По умолчанию 300 сек (5 мин). 0 — таймаут отключён, эксперимент "
+    "всегда продолжается с того же места.\n\n"
     "<b>🔁 Повторное прохождение</b>\n"
     "Если включено — один и тот же участник может пройти эксперимент "
     "несколько раз. Если выключено — бот не даст пройти второй раз.\n\n"
@@ -1252,6 +1276,40 @@ async def ask_timeout(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(waiting_timeout=True)
 
 
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_audio_silence")
+async def ask_audio_silence(callback: types.CallbackQuery, state: FSMContext):
+    """тишина в конце аудио-стимула. падится в файл при загрузке;
+    при изменении настройки уже загруженные файлы перепакуются заново
+    из оригиналов на сохранении эксперимента."""
+    await callback.answer()
+    await _render_screen(
+        callback,
+        "Сколько секунд тишины добавить в конец каждого аудио?\n"
+        "0 — без тишины. Тишина добавляется в сам файл, поэтому "
+        "длительность плеера будет включать её.\n\n"
+        "/cancel — отмена.",
+        state=state,
+    )
+    await state.set_state(CreateExperiment.configuring)
+    await state.update_data(waiting_audio_silence=True)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_idle_timeout")
+async def ask_idle_timeout(callback: types.CallbackQuery, state: FSMContext):
+    """перерыв до сброса: через сколько секунд бездействия abandon-ить
+    сессию участника. 0 — не закрывать, всегда продолжать."""
+    await callback.answer()
+    await _render_screen(
+        callback,
+        "Через сколько секунд бездействия закрывать сессию участника?\n"
+        "0 — не закрывать, эксперимент всегда продолжается с того же места.\n\n"
+        "/cancel — отмена.",
+        state=state,
+    )
+    await state.set_state(CreateExperiment.configuring)
+    await state.update_data(waiting_idle_timeout=True)
+
+
 @router.message(CreateExperiment.configuring, F.text)
 async def on_config_text(message: types.Message, state: FSMContext):
     """обработка текстового ввода в режиме настроек (тайм-аут, подписи)"""
@@ -1269,6 +1327,38 @@ async def on_config_text(message: types.Message, state: FSMContext):
         except ValueError:
             await message.answer("Введите целое число.")
             return
+        await show_settings_submenu(message, state)
+        return
+
+    # тишина в аудио (audio_silence_seconds)
+    if data.get("waiting_audio_silence"):
+        try:
+            val = int(text)
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Введите неотрицательное целое число.")
+            return
+        await state.update_data(
+            audio_silence_seconds=val,
+            waiting_audio_silence=False,
+        )
+        await show_settings_submenu(message, state)
+        return
+
+    # перерыв до сброса (idle timeout)
+    if data.get("waiting_idle_timeout"):
+        try:
+            val = int(text)
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Введите неотрицательное целое число.")
+            return
+        await state.update_data(
+            idle_timeout_seconds=val,
+            waiting_idle_timeout=False,
+        )
         await show_settings_submenu(message, state)
         return
 
@@ -1785,6 +1875,8 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "use_lists": use_lists,
         "lists_count": lists_count,
         "time_limit": data.get("time_limit"),
+        "idle_timeout_seconds": int(data.get("idle_timeout_seconds", 300) or 0),
+        "audio_silence_seconds": int(data.get("audio_silence_seconds", 0) or 0),
         "collect_demographics": data.get("demographics_mode", "off") != "off",
         "demographics_type": "custom" if data.get("demographics_mode") == "custom" else "standard",
         "demographics_custom": data.get("demographics_custom", []),
@@ -1802,7 +1894,29 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
     }
 
     if editing_id:
-        # update: не трогаем owner_id, deep_link_id, status, export_settings
+        # build_phase выше пересобрал пробы из CSV и стёр все file_id
+        # на trial.stimulus_metadata. Подтягиваем их обратно из
+        # media-коллекции, иначе следующая активация упадёт с «не
+        # загружен медиафайл», хотя файлы загружены.
+        media_records = await repo.get_media_by_experiment(editing_id)
+        if media_records:
+            from handlers.media_upload import attach_media_ids_to_phases
+            attach_media_ids_to_phases(media_records, mutable_fields["phases"])
+
+        # если изменилась настройка тишины и шаблон аудио — перепакуем
+        # все аудио-медиа из оригиналов с новой длительностью тишины,
+        # обновим file_id в media-коллекции и в phases (stimulus_metadata).
+        old_exp = await repo.get_experiment(editing_id) or {}
+        old_silence = int(old_exp.get("audio_silence_seconds", 0) or 0)
+        new_silence = int(mutable_fields.get("audio_silence_seconds", 0) or 0)
+        if (
+            template_type in ("forced_choice", "sentence_repetition")
+            and old_silence != new_silence
+        ):
+            await _reapply_audio_silence(
+                callback.bot, callback.from_user.id, editing_id,
+                new_silence, mutable_fields["phases"],
+            )
         await repo.update_experiment(editing_id, mutable_fields)
         exp_id = editing_id
         logger.info("эксперимент %s обновлён пользователем %s", exp_id, callback.from_user.id)
@@ -1836,6 +1950,71 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
 
 
 # ── детали эксперимента ──
+
+async def _reapply_audio_silence(
+    bot, owner_chat_id: int, experiment_id: str, silence_seconds: int,
+    phases: list,
+):
+    """перепаковать все аудио-медиа эксперимента: взять оригинал
+    (`original_file_id`), добавить тишину `silence_seconds`, получить
+    новый file_id, обновить media-запись и подменить file_id во всех
+    trial.stimulus_metadata, ссылающихся на тот же filename.
+
+    вызывается, когда исследователь меняет настройку «тишина в аудио»
+    на сохранении эксперимента. mutates `phases` in-place."""
+    media_list = await repo.get_media_by_experiment(experiment_id)
+    audio_media = [m for m in media_list if m.get("media_type") == "audio"]
+    if not audio_media:
+        return
+
+    if silence_seconds > 0:
+        # одной пачкой через media_group: исследователь увидит один
+        # короткий «прилёт» альбома, а не N отдельных вспышек.
+        items = [
+            (m.get("original_file_id") or m.get("file_id"),
+             m.get("filename", "audio.mp3"))
+            for m in audio_media
+        ]
+        # batch возвращает {filename: (file_id, duration_ms)}
+        new_data = await audio_util.reupload_padded_audios_batch(
+            bot, owner_chat_id, items, silence_seconds,
+        )
+    else:
+        # silence=0 — возвращаемся к оригиналам, ничего не отправляем.
+        # длительность считаем по уже сохранённой минус прежняя тишина:
+        # если её нет, считаем 0 (timer не сработает, но это лучше
+        # пустого file_id).
+        new_data = {}
+        for m in audio_media:
+            filename = m.get("filename", "")
+            orig_id = m.get("original_file_id") or m.get("file_id")
+            prev_total = int(m.get("duration_ms", 0) or 0)
+            prev_silence = int(m.get("silence_ms", 0) or 0)
+            base_dur = max(prev_total - prev_silence, 0)
+            new_data[filename] = (orig_id, base_dur)
+
+    for m in audio_media:
+        filename = m.get("filename", "")
+        entry = new_data.get(filename)
+        if not entry:
+            continue
+        new_id, dur_ms = entry
+        await repo.update_media(str(m["_id"]), {
+            "file_id": new_id,
+            "silence_ms": silence_seconds * 1000,
+            "duration_ms": dur_ms,
+        })
+
+    # обновляем file_id в фазах
+    for phase in phases:
+        if phase.get("stimulus_type") != "audio":
+            continue
+        for trial in phase.get("trials", []):
+            stim = trial.get("stimulus_content", "")
+            if stim in new_data:
+                trial.setdefault("stimulus_metadata", {})
+                trial["stimulus_metadata"]["file_id"] = new_data[stim][0]
+
 
 async def show_experiment_detail(
     target, experiment_id: str, banner: str = "",
@@ -2023,6 +2202,8 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
         demographics_mode=demo_mode,
         demographics_custom=exp.get("demographics_custom", []),
         time_limit=exp.get("time_limit"),
+        idle_timeout_seconds=int(exp.get("idle_timeout_seconds", 300) or 0),
+        audio_silence_seconds=int(exp.get("audio_silence_seconds", 0) or 0),
         allow_repeat=exp.get("allow_repeat", False),
         phases_info=phases_info,
         current_phase_num=None,
@@ -2071,6 +2252,15 @@ async def on_activate_ask(callback: types.CallbackQuery, state: FSMContext):
     exp_id = callback.data.replace("act_ask_", "")
 
     from utils.validators import validate_experiment
+    from handlers.media_upload import attach_media_file_ids
+
+    # подтянуть file_id из media-коллекции в experiment.phases. на_save_draft
+    # после редактирования или незавершённый «Готово» в загрузчике могут
+    # оставить пробы без file_id — но в media-коллекции файлы есть, и мы
+    # тут их подцепляем. без этого валидация рапортует «не загружен
+    # медиафайл», хотя файл загружен.
+    await attach_media_file_ids(exp_id)
+
     exp = await repo.get_experiment(exp_id)
     if not exp:
         await _render_screen(callback, "Эксперимент не найден.", state=state)

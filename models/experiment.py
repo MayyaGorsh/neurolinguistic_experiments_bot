@@ -76,6 +76,8 @@ class Experiment:
     use_lists: bool = False
     lists_count: int = 1
     time_limit: Optional[int] = None
+    idle_timeout_seconds: int = 300     # 0 — отключено: сессия всегда возобновляется
+    audio_silence_seconds: int = 0      # тишина в конце аудио (только для audio-шаблонов)
     collect_demographics: bool = False
     demographics_type: str = "standard" # standard / custom
     demographics_custom: list = field(default_factory=list)
@@ -97,6 +99,8 @@ class Experiment:
             "use_lists": self.use_lists,
             "lists_count": self.lists_count,
             "time_limit": self.time_limit,
+            "idle_timeout_seconds": self.idle_timeout_seconds,
+            "audio_silence_seconds": self.audio_silence_seconds,
             "collect_demographics": self.collect_demographics,
             "demographics_type": self.demographics_type,
             "demographics_custom": self.demographics_custom,

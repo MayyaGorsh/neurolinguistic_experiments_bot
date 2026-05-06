@@ -1,8 +1,7 @@
 audio_filename;opt1;opt2;repeats
-ба_шаг1.wav;ба;па;3
-ба_шаг2.wav;ба;па;3
-ба_шаг3.wav;ба;па;3
-ба_шаг4.wav;ба;па;3
-па_шаг5.wav;ба;па;3
-па_шаг6.wav;ба;па;3
-па_шаг7.wav;ба;па;3
+work1.wav;*work;walk;3
+work2.wav;*work;walk;3
+work3.wav;*work;walk;3
+walk1.wav;work;*walk;3
+walk2.wav;work;*walk;3
+walk3.wav;work;*walk;3

@@ -159,6 +159,19 @@ async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
         )
         return
 
+    # идемпотентность: если инструкция этой фазы уже была подтверждена
+    # (shown_instructions содержит текущий phase_idx), повторные клики
+    # ничего не делают — иначе каждый клик заново вызывает present_trial
+    # и пересылает первый стимул фазы. возникает, например, когда
+    # delete_previous_trials=False и кнопка «Далее» инструкции остаётся
+    # видимой в чате после первого клика.
+    shown = list(session.get("shown_instructions", []))
+    if current_phase in shown:
+        await callback.answer(
+            "Эта инструкция уже пройдена.", show_alert=True,
+        )
+        return
+
     experiment = await repo.get_experiment(session["experiment_id"])
     if not experiment:
         return
@@ -166,11 +179,9 @@ async def on_instruction_ok(callback: types.CallbackQuery, bot: Bot):
     # помечаем инструкцию текущей фазы как показанную — чтобы
     # present_trial не нарисовал её снова (именно из-за этого раньше
     # получалась бесконечная петля «Далее»)
-    shown = list(session.get("shown_instructions", []))
-    if current_phase not in shown:
-        shown.append(current_phase)
-        await repo.update_session(session_id, {"shown_instructions": shown})
-        session = await repo.get_session(session_id)
+    shown.append(current_phase)
+    await repo.update_session(session_id, {"shown_instructions": shown})
+    session = await repo.get_session(session_id)
 
     prepared = session.get("prepared_phases") or experiment["phases"]
     exp_copy = dict(experiment)
@@ -227,6 +238,16 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
     if isinstance(ptc, dict) and ptc.get("stage") in ("ask_original", "ask_new"):
         await callback.answer(
             "Сначала напишите слово сообщением.", show_alert=True,
+        )
+        return
+
+    # interpretation_generation: после клика «Далее» ждём текст с
+    # интерпретацией — повторные клики по той же «Далее» игнорируем,
+    # чтобы не сбросить reading_rt и не дублировать промпт.
+    pi = session.get("pending_interpretation")
+    if isinstance(pi, dict) and pi.get("stage") == "awaiting_text":
+        await callback.answer(
+            "Напишите интерпретацию сообщением.", show_alert=True,
         )
         return
 
