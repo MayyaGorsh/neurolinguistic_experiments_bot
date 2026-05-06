@@ -54,6 +54,21 @@ register("forced_choice", {
     "build_phase": build_forced_choice,
     "export_columns": ["audio_filename", "repeats"],
     "phases_info": ["Forced Choice Identification"],
+    "example_caption": (
+        "<b>Пример CSV для Forced Choice Identification</b>\n\n"
+        "Каждая строка — один аудио-стимул.\n\n"
+        "Колонки:\n"
+        "• <code>audio_filename</code> — имя аудиофайла (например, "
+        "<code>work1.wav</code>). Сами файлы вы загрузите отдельно "
+        "следующим шагом.\n"
+        "• <code>opt1</code>…<code>opt6</code> — лейблы кнопок ответа "
+        "(классы для идентификации, от 2 до 6).\n"
+        "• <code>repeats</code> — опционально, сколько раз повторить "
+        "стимул в эксперименте (по умолчанию 1).\n\n"
+        "Если у задачи есть «правильный» класс, пометьте его "
+        "<code>*</code>: <code>*work</code>. Для чисто идентификационных "
+        "задач без правильного ответа <code>*</code> не ставьте."
+    ),
 })
 
 
@@ -90,4 +105,14 @@ register("sentence_repetition", {
     "build_phase": build_sentence_repetition,
     "export_columns": ["audio_filename"],
     "phases_info": ["Sentence Repetition"],
+    "example_caption": (
+        "<b>Пример CSV для Sentence Repetition</b>\n\n"
+        "Каждая строка — один аудио-стимул.\n\n"
+        "Колонки:\n"
+        "• <code>audio_filename</code> — имя аудиофайла со стимулом. "
+        "Сами файлы вы загрузите отдельно следующим шагом.\n\n"
+        "Респондент прослушает стимул и пришлёт голосовое сообщение с "
+        "устным повторением. Бот сохранит аудиофайлы ответов; разметка "
+        "корректности — на стороне исследователя."
+    ),
 })

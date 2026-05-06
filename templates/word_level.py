@@ -37,6 +37,18 @@ register("lexical_decision", {
     "build_phase": build_lexical_decision,
     "export_columns": [],
     "phases_info": ["Lexical Decision"],
+    "example_caption": (
+        "<b>Пример CSV для Lexical Decision</b>\n\n"
+        "Каждая строка — одна проба.\n\n"
+        "Колонки:\n"
+        "• <code>stimulus</code> — слово или несловарная строка "
+        "(например, «кошка», «бртан»).\n"
+        "• <code>opt1</code>, <code>opt2</code> — лейблы кнопок ответа "
+        "(по умолчанию «Слово» / «Не слово»; можно поменять).\n\n"
+        "Правильный вариант помечается <code>*</code>: для реальных слов "
+        "— <code>*Слово</code>, для несловарных строк — "
+        "<code>*Не слово</code>."
+    ),
 })
 
 
@@ -98,6 +110,20 @@ register("predictability_rating", {
             "5": "Очень ожидаемо",
         },
     }},
+    "example_caption": (
+        "<b>Пример CSV для Predictability Rating</b>\n\n"
+        "Каждая строка — одно предложение с одним целевым словом в "
+        "пропуске.\n\n"
+        "Колонки:\n"
+        "• <code>left_context</code> — часть предложения до пропуска.\n"
+        "• <code>target</code> — слово, ожидаемость которого нужно "
+        "оценить.\n"
+        "• <code>right_context</code> — часть предложения после пропуска "
+        "(можно оставить пустым, если пропуск стоит в конце).\n\n"
+        "Бот соберёт стимул вида «<i>left_context</i> ___ "
+        "<i>right_context</i>» и отдельно покажет целевое слово, после "
+        "чего попросит оценку по шкале Ликерта."
+    ),
 })
 
 
@@ -137,6 +163,21 @@ register("cloze_mc", {
     "build_phase": build_cloze_mc,
     "export_columns": [],
     "phases_info": ["Cloze (multiple choice)"],
+    "example_caption": (
+        "<b>Пример CSV для Cloze (multiple choice)</b>\n\n"
+        "Каждая строка — одна проба.\n\n"
+        "Колонки:\n"
+        "• <code>stimulus</code> — предложение с пропуском "
+        "<code>___</code> на месте искомого слова.\n"
+        "• <code>opt1</code>…<code>opt6</code> — варианты ответа на "
+        "кнопках (от 2 до 6).\n\n"
+        "Правильный вариант помечается <code>*</code>: "
+        "<code>*читает</code>.\n\n"
+        "<b>Контекстные предложения.</b> Если в строке нет "
+        "<code>___</code> и нет правильного варианта, бот считает её "
+        "контекстной и выводит просто с кнопкой «Далее» — это удобно для "
+        "подводящих предложений к критическому стимулу."
+    ),
 })
 
 
@@ -175,6 +216,19 @@ register("cloze_open", {
     "build_phase": build_cloze_open,
     "export_columns": [],
     "phases_info": ["Cloze (open ended)"],
+    "example_caption": (
+        "<b>Пример CSV для Cloze (open ended)</b>\n\n"
+        "Каждая строка — одна проба.\n\n"
+        "Колонки:\n"
+        "• <code>stimulus</code> — предложение с пропуском "
+        "<code>___</code>.\n"
+        "• <code>correct1</code>…<code>correct10</code> — допустимые "
+        "варианты заполнения пропуска (до 10). Достаточно перечислить "
+        "только те, что считаются корректными при оценивании; остальные "
+        "колонки оставьте пустыми.\n\n"
+        "Респондент вводит ответ текстом; в выгрузке сохраняется сам "
+        "ответ и пометка, попадает ли он в список допустимых."
+    ),
 })
 
 
@@ -204,6 +258,16 @@ register("word_translation_mc", {
     "build_phase": build_word_translation_mc,
     "export_columns": [],
     "phases_info": ["Word Translation (closed)"],
+    "example_caption": (
+        "<b>Пример CSV для Word Translation (closed)</b>\n\n"
+        "Каждая строка — одно слово на исходном языке.\n\n"
+        "Колонки:\n"
+        "• <code>stimulus</code> — слово на исходном языке (например, "
+        "«будинок»).\n"
+        "• <code>opt1</code>…<code>opt6</code> — варианты перевода на "
+        "кнопках (от 2 до 6).\n\n"
+        "Правильный перевод помечается <code>*</code>: <code>*дом</code>."
+    ),
 })
 
 
@@ -242,4 +306,15 @@ register("word_translation_open", {
     "build_phase": build_word_translation_open,
     "export_columns": [],
     "phases_info": ["Word Translation (open)"],
+    "example_caption": (
+        "<b>Пример CSV для Word Translation (open)</b>\n\n"
+        "Каждая строка — одно слово на исходном языке.\n\n"
+        "Колонки:\n"
+        "• <code>stimulus</code> — слово на исходном языке.\n"
+        "• <code>correct1</code>…<code>correct6</code> — допустимые "
+        "переводы (до 6). Достаточно перечислить только корректные "
+        "варианты, остальные колонки оставьте пустыми.\n\n"
+        "Респондент вводит перевод текстом; в выгрузке сохраняется "
+        "ответ и пометка, попадает ли он в список допустимых."
+    ),
 })
