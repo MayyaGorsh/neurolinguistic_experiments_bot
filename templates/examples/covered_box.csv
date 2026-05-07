@@ -1,6 +1,6 @@
 stimulus;pair_id;img_1_filename;img_2_filename;img_3_filename;correct_img
-Дай мне коробку с некоторыми кругами.;крит_некот_01;три_из_пяти.png;пять_из_пяти.png;закрытая_коробка.png;три_из_пяти.png
-Дай мне коробку с четырьмя кругами.;крит_число_02;три_из_пяти.png;пять_из_пяти.png;закрытая_коробка.png;закрытая_коробка.png
-Дай мне коробку с кошками.;филлер_03;две_кошки.png;без_кошек.png;закрытая_коробка.png;две_кошки.png
-Дай мне коробку с красным кругом.;трен_01;синий_квадрат.png;зелёный_треугольник.png;закрытая_коробка.png;закрытая_коробка.png
-Дай мне коробку с яблоком.;трен_02;яблоко_на_столе.png;пустой_стол.png;закрытая_коробка.png;яблоко_на_столе.png
+Покажи оленя.;олень_01;deer_photo.jpg;whale_photo.jpg;covered.png;deer_photo.jpg
+Покажи птицу.;птица_02;whale_photo.jpg;clownfish_photo.jpg;covered.png;covered.png
+Покажи рептилию.;рептилия_03;iguana_photo.jpg;clownfish_photo.jpg;covered.png;iguana_photo.jpg
+Покажи мелкое млекопитающее.;мелкое_04;deer_photo.jpg;clownfish_photo.jpg;covered.png;covered.png
+Покажи рыбу.;рыба_05;clownfish_photo.jpg;whale_photo.jpg;covered.png;clownfish_photo.jpg

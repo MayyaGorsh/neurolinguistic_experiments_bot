@@ -74,6 +74,12 @@ async def show_experiment_detail(
         f"{', '.join(summary_parts)}\n"
     )
 
+    # сводка настроек — тот же набор тогглов, что и в подменю настроек
+    from handlers.researcher_settings import settings_summary_block
+    settings_block = settings_summary_block(exp)
+    if settings_block:
+        text += f"\n{settings_block}"
+
     if exp["status"] == "active":
         # имя бота берём из target.bot — оба CallbackQuery и Message
         # имеют атрибут .bot, который инжектится aiogram-ом.
@@ -214,6 +220,7 @@ async def on_edit_draft(callback: types.CallbackQuery, state: FSMContext):
         template_type=exp.get("template_type", ""),
         randomize=exp.get("randomize_trials", False),
         randomize_button_positions=exp.get("randomize_button_positions", False),
+        randomize_image_positions=exp.get("randomize_image_positions", False),
         delete_previous_trials=exp.get("delete_previous_trials", True),
         demographics_mode=demo_mode,
         demographics_custom=exp.get("demographics_custom", []),
@@ -428,8 +435,10 @@ async def on_delete_ask(callback: types.CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("del_do_"))
-async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
-    """шаг 2: выгрузить CSV (если есть данные) и удалить эксперимент."""
+async def on_delete_do(
+    callback: types.CallbackQuery, state: FSMContext, bot: Bot,
+):
+    """шаг 2: выгрузить результаты (если есть данные) и удалить эксперимент."""
     await callback.answer()
     exp_id = callback.data.replace("del_do_", "")
     exp = await repo.get_experiment(exp_id)
@@ -439,11 +448,11 @@ async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
 
     title = exp.get("title", "experiment")
 
-    # сначала пробуем выгрузить CSV — если упадёт, не удаляем данные
+    # сначала пробуем собрать выгрузку — если упадёт, не удаляем данные
     try:
-        csv_text = await export_util.export_experiment_csv(exp_id)
+        data, kind = await export_util.export_experiment_bundle(bot, exp_id)
     except Exception:
-        logger.exception("ошибка экспорта CSV перед удалением %s", exp_id)
+        logger.exception("ошибка экспорта перед удалением %s", exp_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="← К эксперименту",
@@ -452,7 +461,7 @@ async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
         ])
         await _render_screen(
             callback,
-            "❌ Не удалось сгенерировать CSV. Удаление отменено, "
+            "❌ Не удалось сгенерировать выгрузку. Удаление отменено, "
             "чтобы не потерять данные. Попробуйте ещё раз позже.",
             kb,
             state=state,
@@ -460,7 +469,7 @@ async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
         return
 
     # удаляем сообщение-подтверждение, чтобы итоговое меню оказалось
-    # ниже CSV-файла, а не над ним. (отредактировать его «на месте»
+    # ниже файла, а не над ним. (отредактировать его «на месте»
     # нельзя — оно осталось бы выше документа в ленте чата.)
     try:
         await callback.message.delete()
@@ -468,18 +477,23 @@ async def on_delete_do(callback: types.CallbackQuery, state: FSMContext):
         pass
 
     csv_note = ""
-    if csv_text and csv_text.strip():
-        file = BufferedInputFile(
-            csv_text.encode("utf-8-sig"),
-            filename=f"results_{exp_id}.csv",
-        )
+    if data:
+        if kind == "zip":
+            filename = f"results_{exp_id}.zip"
+            csv_note = (
+                "📥 Архив с CSV и голосовыми ответами — выше отдельным "
+                "файлом.\n\n"
+            )
+        else:
+            filename = f"results_{exp_id}.csv"
+            csv_note = "📥 CSV с результатами — выше отдельным файлом.\n\n"
+        file = BufferedInputFile(data, filename=filename)
         await callback.message.answer_document(
             file,
             caption=f"Результаты «{title}» перед удалением.",
         )
-        csv_note = "📥 CSV с результатами — выше отдельным файлом.\n\n"
     else:
-        csv_note = "ℹ️ Данных для экспорта не было — CSV не прислан.\n\n"
+        csv_note = "ℹ️ Данных для экспорта не было — файл не прислан.\n\n"
 
     # каскадное удаление
     counts = await repo.delete_experiment_cascade(exp_id)
@@ -616,28 +630,31 @@ async def on_results(callback: types.CallbackQuery, state: FSMContext):
 # ── экспорт CSV ──
 
 @router.callback_query(F.data.startswith("export_"))
-async def on_export(callback: types.CallbackQuery, state: FSMContext):
+async def on_export(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
     exp_id = callback.data.replace("export_", "")
 
-    csv_text = await export_util.export_experiment_csv(exp_id)
-    if not csv_text.strip():
+    data, kind = await export_util.export_experiment_bundle(bot, exp_id)
+    if not data:
         # экран не меняем — показываем тоаст-уведомление поверх кнопки
         await callback.answer("Нет данных для экспорта.", show_alert=True)
         return
 
     await callback.answer()
-    file = BufferedInputFile(
-        csv_text.encode("utf-8-sig"),
-        filename=f"results_{exp_id}.csv",
-    )
-    # удаляем текущий экран (карточку или экран результатов), чтобы CSV
+    if kind == "zip":
+        filename = f"results_{exp_id}.zip"
+        caption = "Результаты эксперимента (CSV + голосовые ответы)"
+    else:
+        filename = f"results_{exp_id}.csv"
+        caption = "Результаты эксперимента"
+    file = BufferedInputFile(data, filename=filename)
+    # удаляем текущий экран (карточку или экран результатов), чтобы файл
     # оказался выше итогового меню. иначе документ висит снизу, а
     # активное меню — сверху, неудобно.
     try:
         await callback.message.delete()
     except Exception:
         pass
-    await callback.message.answer_document(file, caption="Результаты эксперимента")
+    await callback.message.answer_document(file, caption=caption)
     # перерисовываем карточку эксперимента новым сообщением — она
     # окажется ниже файла. возвращаемся именно в карточку: это самый
     # частый «домашний» экран после экспорта. show_experiment_detail

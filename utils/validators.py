@@ -4,6 +4,7 @@
 
 import logging
 from templates import registry as tmpl_registry
+from utils.media import collect_trial_media
 
 logger = logging.getLogger("bot")
 
@@ -37,15 +38,31 @@ def validate_experiment(experiment: dict) -> list[str]:
             list_ids.add(lid)
         phase_list_sets.append(list_ids)
 
-        # проверка медиа
+        # проверка медиа: смотрим все имена файлов, которые трайл
+        # реально использует (для multi-image шаблонов имена лежат в
+        # stimulus_metadata, а не в stimulus_content), и сверяемся с
+        # blob_ids (картинки в GridFS) либо file_ids (аудио/видео по
+        # Telegram file_id), которые заполняет attach_media_ids_to_phases.
         stim_type = phase.get("stimulus_type", "text")
         if stim_type in ("audio", "image", "video"):
             for j, trial in enumerate(trials):
-                meta = trial.get("stimulus_metadata", {})
-                if not meta.get("file_id"):
+                needed = collect_trial_media(trial)
+                if not needed:
+                    continue
+                meta = trial.get("stimulus_metadata", {}) or {}
+                attached = set((meta.get("blob_ids") or {}).keys())
+                attached |= set((meta.get("file_ids") or {}).keys())
+                stim = trial.get("stimulus_content", "")
+                if isinstance(stim, str) and (
+                    meta.get("blob_id") or meta.get("file_id")
+                ):
+                    attached.add(stim)
+                missing = sorted(needed - attached)
+                if missing:
+                    files_part = ", ".join(f"«{m}»" for m in missing)
                     errors.append(
                         f"Фаза {i + 1}, проба {j + 1}: "
-                        f"не загружен медиафайл для «{trial.get('stimulus_content', '')}»."
+                        f"не загружен(ы) медиафайл(ы) {files_part}."
                     )
 
         # проверка, что у проб есть содержимое
@@ -161,9 +178,10 @@ def check_media_files(experiment: dict, uploaded_files: dict) -> list[str]:
     """проверить, что все нужные медиафайлы загружены"""
     errors = []
     for phase in experiment.get("phases", []):
-        if phase.get("stimulus_type") in ("audio", "image", "video"):
-            for trial in phase.get("trials", []):
-                stim = trial.get("stimulus_content", "")
-                if stim and stim not in uploaded_files:
-                    errors.append(f"Не загружен файл: «{stim}».")
+        if phase.get("stimulus_type") not in ("audio", "image", "video"):
+            continue
+        for trial in phase.get("trials", []):
+            for fn in collect_trial_media(trial):
+                if fn not in uploaded_files:
+                    errors.append(f"Не загружен файл: «{fn}».")
     return errors

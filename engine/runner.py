@@ -23,6 +23,7 @@ from bson import ObjectId
 
 from db import repositories as repo
 from engine import audio as audio_util
+from engine import images as image_util
 from utils.idle_guard import touch_session
 
 logger = logging.getLogger("bot")
@@ -160,6 +161,12 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     stimulus_type = phase.get("stimulus_type", trial.get("stimulus_type", "text"))
     response_type = phase.get("response_type", "buttons")
 
+    # сообщения, которые надо удалять при переходе к следующей пробе
+    # (сверх основного msg). multi-image трайлы шлют ещё текст-стимул и
+    # альбом картинок — без явного добавления в transient они остаются
+    # в чате, и «чистить предыдущие пробы» работает наполовину.
+    extra_transient_ids: list[int] = []
+
     # собираем клавиатуру ответов
     keyboard = build_response_keyboard(trial, phase, session_id, phase_idx, trial_idx)
 
@@ -207,14 +214,155 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             reply_markup=keyboard,
         )
     elif stimulus_type == "image":
-        # caption намеренно не передаём: stimulus_content для медиа-
-        # шаблонов — это имя файла из CSV, оно не должно показываться
-        # участнику.
-        file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
-        msg = await bot.send_photo(
-            chat_id, file_id,
-            reply_markup=keyboard,
-        )
+        from aiogram.types import BufferedInputFile
+
+        meta = trial.get("stimulus_metadata", {}) or {}
+        blob_ids_by_name = meta.get("blob_ids") or {}
+        file_ids_by_name = meta.get("file_ids") or {}
+        ordered_names = meta.get("images") or []
+
+        # фастпас: если для имени уже есть photo file_id (Telegram
+        # выдал его на предыдущем сеансе или предыдущем трайле этой
+        # же сессии — мы кэшируем результат после первой отправки),
+        # шлём этот id напрямую — никаких байтов через сеть. Иначе
+        # подтаскиваем байты из GridFS.
+        ordered_args: list[tuple[str, object, bool]] = []
+        for name in ordered_names:
+            cached_id = file_ids_by_name.get(name)
+            if cached_id:
+                ordered_args.append((name, cached_id, False))
+                continue
+            blob_id = blob_ids_by_name.get(name)
+            if not blob_id:
+                continue
+            data = await repo.read_stimulus_blob(blob_id)
+            if data is None:
+                continue
+            ordered_args.append(
+                (name, BufferedInputFile(data, filename=name), True)
+            )
+
+        if len(ordered_args) >= 2:
+            # multi-image трайл (picture_selection / covered_box):
+            # 1) предложение-стимул отдельным сообщением (caption у
+            #    media_group рисуется поверх первой картинки и легко
+            #    режется по длине — выносим в текст).
+            # 2) альбом картинок с подписями «1», «2» (или «3») —
+            #    одна цифра соответствует одной кнопке ниже.
+            # 3) клавиатура с кнопками выбора. inline-keyboard на сам
+            #    media_group повесить нельзя — отдельным сообщением.
+            stim_text = (trial.get("stimulus_content") or "").strip()
+            if stim_text:
+                text_msg = await bot.send_message(chat_id, stim_text)
+                await repo.push_phase_message_id(
+                    session_id, text_msg.message_id,
+                )
+                extra_transient_ids.append(text_msg.message_id)
+
+            album = [
+                InputMediaPhoto(media=arg, caption=str(i + 1))
+                for i, (_name, arg, _was_bytes) in enumerate(ordered_args)
+            ]
+            try:
+                album_msgs = await bot.send_media_group(chat_id, album)
+            except Exception as e:
+                # как правило сюда попадаем, если в meta.file_ids
+                # лежит stale id (например, document id, оставшийся
+                # от предыдущего билда логики). Пересобираем альбом
+                # из GridFS-байт и шлём повторно — после удачи кэш
+                # обновится корректным photo file_id'ом.
+                logger.warning(
+                    "send_media_group упал на кэшированных id (%s) — "
+                    "пересобираю из GridFS-байт", e,
+                )
+                rebuilt = []
+                for name, _arg, _was_bytes in ordered_args:
+                    blob_id = blob_ids_by_name.get(name)
+                    if not blob_id:
+                        continue
+                    data = await repo.read_stimulus_blob(blob_id)
+                    if data is None:
+                        continue
+                    rebuilt.append(
+                        (name, BufferedInputFile(data, filename=name), True)
+                    )
+                ordered_args = rebuilt
+                album = [
+                    InputMediaPhoto(media=arg, caption=str(i + 1))
+                    for i, (_n, arg, _w) in enumerate(ordered_args)
+                ]
+                album_msgs = await bot.send_media_group(chat_id, album)
+
+            for am in album_msgs:
+                await repo.push_phase_message_id(
+                    session_id, am.message_id,
+                )
+                extra_transient_ids.append(am.message_id)
+
+            # кэшируем photo file_id'ы для тех картинок, которые на
+            # этом трайле летели байтами — следующий показ пойдёт
+            # быстрым путём.
+            new_ids: dict[str, str] = {}
+            for (name, _arg, was_bytes), am in zip(ordered_args, album_msgs):
+                if not was_bytes:
+                    continue
+                pid = am.photo[-1].file_id if am.photo else None
+                if pid:
+                    new_ids[name] = pid
+            if new_ids:
+                await _cache_photo_file_ids(
+                    session_id, experiment, new_ids,
+                )
+
+            msg = await bot.send_message(
+                chat_id, "Выберите номер картинки:",
+                reply_markup=keyboard,
+            )
+        else:
+            # одиночная картинка (picture_naming). Тот же кэш-фастпас:
+            # если есть file_id, шлём id; иначе достаём байты из GridFS
+            # и кэшируем результат.
+            single_name = (meta.get("img_filename") or "").strip() or None
+            cached_id = (
+                file_ids_by_name.get(single_name) if single_name else None
+            ) or meta.get("file_id")
+            msg = None
+            if cached_id:
+                try:
+                    msg = await bot.send_photo(
+                        chat_id, cached_id, reply_markup=keyboard,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "send_photo по кэшированному id упал (%s) — "
+                        "пробую байтами", e,
+                    )
+            if msg is None:
+                blob_id = meta.get("blob_id")
+                data = (
+                    await repo.read_stimulus_blob(blob_id) if blob_id else None
+                )
+                if data is None:
+                    logger.error(
+                        "image-стимул без blob: phase=%s trial=%s — пропускаю",
+                        phase_idx, trial_idx,
+                    )
+                    msg = await bot.send_message(
+                        chat_id, "(стимул недоступен)", reply_markup=keyboard,
+                    )
+                else:
+                    msg = await bot.send_photo(
+                        chat_id,
+                        BufferedInputFile(
+                            data, filename=single_name or "image",
+                        ),
+                        reply_markup=keyboard,
+                    )
+                    pid = msg.photo[-1].file_id if msg.photo else None
+                    if pid and single_name:
+                        await _cache_photo_file_ids(
+                            session_id, experiment, {single_name: pid},
+                        )
     elif stimulus_type == "audio":
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
         # title/performer = " " — иначе Telegram выводит имя файла
@@ -309,13 +457,13 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             #     msg.message_id, duration_ms,
             # )
     if delete_previous:
-        # сохраняем msg в transient — если участник нажмёт кнопку
-        # раньше срабатывания таймера, advance_trial → present_trial
-        # удалит его через обычную чистку. таймер при этом cancel_timeout
-        # отменяет (см. process_answer). если же таймер сработает первым,
-        # он сам удалит сообщение, а transient-чистка следующей пробы
-        # вызовет delete_message повторно — это no-op, ошибки гасятся.
-        update_fields["transient_message_ids"] = [msg.message_id]
+        # сохраняем msg + дополнительные сообщения трайла в transient.
+        # На next-trial обычная чистка удалит их перед показом нового
+        # стимула. Если сработает таймер, он удалит главный msg сам,
+        # а повторный delete_message — no-op, ошибки гасятся.
+        update_fields["transient_message_ids"] = (
+            extra_transient_ids + [msg.message_id]
+        )
     await repo.update_session(session_id, update_fields)
 
     # для превью: помечаем стимул как «активное меню исследователя».
@@ -540,12 +688,16 @@ async def process_answer(
     raw_response: str,
     option_index: Optional[int] = None,
     message_id: Optional[int] = None,
+    extra_metadata: Optional[dict] = None,
 ):
     """обработать ответ респондента на текущую пробу.
 
     message_id — id сообщения, на кнопку которого был клик (нужен для
     AJT joint_two_ratings, чтобы отредактировать текст и клавиатуру под
     второе оценивание без отправки нового сообщения).
+
+    extra_metadata — дополнительные поля, которые нужно сохранить в
+    answer.metadata. Например, voice_blob_id для голосовых ответов.
     """
     session_id = str(session["_id"])
     phase_idx = session["current_phase"]
@@ -1036,6 +1188,8 @@ async def process_answer(
     if response_type == "likert":
         # для likert числовое значение = сам ответ, raw_response уже строкa
         metadata["option_index"] = option_index
+    if extra_metadata:
+        metadata.update(extra_metadata)
     answer_data = {
         "session_id": session_id,
         "experiment_id": session["experiment_id"],
@@ -1322,6 +1476,75 @@ def randomize_trials(trials: list, seed: Optional[int] = None) -> list:
     return shuffled
 
 
+async def _cache_photo_file_ids(
+    session_id: str, experiment: dict, name_to_photo: dict[str, str],
+) -> None:
+    """запомнить photo file_id'ы, полученные после первого реального
+    upload'а байтов. Пишем в три места:
+
+    1) media-коллекция — пер-эксперимент cross-session кэш, видим всем
+       будущим сессиям ещё на этапе attach_media_ids_to_phases;
+    2) experiment.phases — чтобы новые сессии стартовали уже с
+       проставленными photo file_id'ами (а не с теми document id, что
+       могли остаться от старого билда);
+    3) session.prepared_phases — чтобы следующий трайл уже текущей
+       сессии пошёл фастпасом, не дожидаясь нового запуска.
+    """
+    if not name_to_photo:
+        return
+
+    exp_id = str(experiment.get("_id", ""))
+    if exp_id:
+        for name, pid in name_to_photo.items():
+            try:
+                await repo.set_media_photo_id(exp_id, name, pid)
+            except Exception:
+                logger.exception(
+                    "set_media_photo_id упал для %s", name,
+                )
+
+    phases = experiment.get("phases", [])
+    for phase in phases:
+        if phase.get("stimulus_type") != "image":
+            continue
+        for trial in phase.get("trials", []):
+            meta = trial.get("stimulus_metadata") or {}
+            blobs = meta.get("blob_ids") or {}
+            single_name = meta.get("img_filename") or ""
+            fids = meta.setdefault("file_ids", {})
+            for name, pid in name_to_photo.items():
+                if name in blobs or name == single_name:
+                    fids[name] = pid
+            if single_name in name_to_photo:
+                meta["file_id"] = name_to_photo[single_name]
+            trial["stimulus_metadata"] = meta
+
+    try:
+        await repo.update_session(
+            session_id, {"prepared_phases": phases},
+        )
+    except Exception:
+        logger.exception(
+            "не удалось сохранить prepared_phases с кэшированным "
+            "photo file_id для сессии %s", session_id,
+        )
+
+    # пер-эксперимент: дёргаем стандартный attach по media-коллекции,
+    # она уже обновлена set_media_photo_id выше. attach перечитает
+    # эталонные experiment.phases из БД (со ВСЕМИ листами) и проставит
+    # туда свежие photo id — без риска потерять трайлы чужого листа,
+    # которые в session.prepared_phases отфильтрованы.
+    if exp_id:
+        try:
+            from handlers.media_upload import attach_media_file_ids
+            await attach_media_file_ids(exp_id)
+        except Exception:
+            logger.exception(
+                "не удалось пере-аттачить media id'ы в experiment.phases (%s)",
+                exp_id,
+            )
+
+
 def filter_trials_by_list(trials: list, list_id: str) -> list:
     """оставить только пробы, принадлежащие заданному листу (или без листа)"""
     return [t for t in trials if t.get("list_id") in (list_id, None)]
@@ -1368,6 +1591,31 @@ def prepare_trials_for_session(
                 shuffled = list(options)
                 random.shuffle(shuffled)
                 t_copy["response_options"] = shuffled
+                rebuilt.append(t_copy)
+            else:
+                rebuilt.append(t)
+        trials = rebuilt
+
+    # рандомизация позиций картинок в пробе (picture_selection /
+    # covered_box). Тасуем именно здесь, на старте сессии, а не в
+    # build_phase: тогда у каждого участника свой случайный порядок,
+    # а в эталонных experiment.phases всегда лежит «как в CSV».
+    # correct_answer пересчитывать не нужно — там лежит имя файла,
+    # инвариантное к перестановке позиций.
+    if phase.get("randomize_image_positions", False):
+        rebuilt = []
+        for t in trials:
+            meta = t.get("stimulus_metadata") or {}
+            images = list(meta.get("images") or [])
+            if len(images) >= 2:
+                t_copy = dict(t)
+                new_meta = dict(meta)
+                shuffled = list(images)
+                random.shuffle(shuffled)
+                new_meta["images"] = shuffled
+                for i, name in enumerate(shuffled):
+                    new_meta[f"img_{i + 1}"] = name
+                t_copy["stimulus_metadata"] = new_meta
                 rebuilt.append(t_copy)
             else:
                 rebuilt.append(t)

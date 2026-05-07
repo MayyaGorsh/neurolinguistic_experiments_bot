@@ -164,6 +164,7 @@ async def on_save_draft(callback: types.CallbackQuery, state: FSMContext):
         "phases": phases,
         "randomize_trials": data.get("randomize", False),
         "randomize_button_positions": data.get("randomize_button_positions", False),
+        "randomize_image_positions": data.get("randomize_image_positions", False),
         "delete_previous_trials": data.get("delete_previous_trials", True),
         "use_lists": use_lists,
         "lists_count": lists_count,

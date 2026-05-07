@@ -280,6 +280,20 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
             options = trial.get("response_options", [])
             if option_index < len(options):
                 raw_response = options[option_index]
+                # Шаблоны с картинками: участник кликнул кнопку под
+                # позицией N («1», «2», «3»), но в выгрузку важно
+                # сохранить имя выбранной картинки — иначе по «1» не
+                # поймёшь, что именно было выбрано (тем более при
+                # включённом перемешивании позиций). Резолвим в
+                # filename из stimulus_metadata.images.
+                phase_settings = phase.get("settings") or {}
+                if phase_settings.get("is_picture_selection") or \
+                        phase_settings.get("is_covered_box"):
+                    images = (
+                        trial.get("stimulus_metadata") or {}
+                    ).get("images") or []
+                    if option_index < len(images) and images[option_index]:
+                        raw_response = images[option_index]
             else:
                 raw_response = str(option_index)
 
@@ -451,11 +465,42 @@ async def on_voice_answer(message: types.Message, bot: Bot):
         await message.answer("В этом задании нужно ответить текстом или кнопками.")
         return
 
-    # сохраняем file_id голосового сообщения
     voice_file_id = message.voice.file_id
+
+    # сразу качаем байты к себе — Telegram file_id формально вечный, но
+    # надёжнее не зависеть от него: исследователь может выгрузить
+    # результаты через несколько месяцев. блоб лежит в GridFS, raw_response
+    # хранит оригинальный telegram-id для отладки.
+    voice_blob_id = None
+    try:
+        file = await bot.download(voice_file_id)
+        voice_bytes = file.read()
+        voice_blob_id = await repo.save_voice_blob(
+            voice_bytes,
+            filename=f"voice_{voice_file_id}.ogg",
+            metadata={
+                "experiment_id": session["experiment_id"],
+                "session_id": str(session["_id"]),
+                "telegram_file_id": voice_file_id,
+                "phase_index": session.get("current_phase"),
+                "trial_index": session.get("current_trial"),
+            },
+        )
+    except Exception:
+        logger.exception(
+            "не удалось скачать voice file_id=%s для сессии %s — "
+            "сохраним только telegram-id, выгрузка попробует докачать позже",
+            voice_file_id, session.get("_id"),
+        )
+
+    extra_metadata = {}
+    if voice_blob_id:
+        extra_metadata["voice_blob_id"] = voice_blob_id
+
     await runner.process_answer(
         bot, message.from_user.id, session, exp_copy,
         f"voice:{voice_file_id}",
+        extra_metadata=extra_metadata or None,
     )
 
 

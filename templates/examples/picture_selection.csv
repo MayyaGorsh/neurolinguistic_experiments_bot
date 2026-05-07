@@ -1,6 +1,6 @@
 stimulus;pair_id;img_1_filename;img_2_filename;correct_img
-Некоторые яблоки лежат в коробке.;некот_яблоки_01;все_яблоки.png;некоторые_яблоки.png;некоторые_яблоки.png
-Некоторые звёзды красные.;некот_звёзды_02;все_звёзды.png;некоторые_звёзды.png;некоторые_звёзды.png
-Девочка ест печенье или торт.;или_печенье_03;и_печенье.png;или_печенье.png;или_печенье.png
-Кошка спит на диване.;филлер_01;кошка_спит.png;собака_бежит.png;кошка_спит.png
-Машина синяя.;филлер_02;красная_машина.png;синяя_машина.png;синяя_машина.png
+На картинке птица.;птица_01;robin_photo.jpg;iguana_photo.jpg;robin_photo.jpg
+На картинке ящерица.;ящерица_02;iguana_photo.jpg;macaw_photo.jpg;iguana_photo.jpg
+На картинке морское животное.;море_03;whale_photo.jpg;deer_photo.jpg;whale_photo.jpg
+На картинке олень.;олень_04;stag_photo.jpg;meerkat_photo.jpg;stag_photo.jpg
+На картинке рыба.;рыба_05;clownfish_photo.jpg;prairiedog_photo.jpg;clownfish_photo.jpg

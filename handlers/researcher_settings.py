@@ -52,6 +52,10 @@ def _collect_settings_state(data: dict) -> dict:
     audio_silence_label = "нет" if audio_silence <= 0 else f"{audio_silence} сек"
     is_audio_template = tmpl in ("forced_choice", "sentence_repetition")
     allow_repeat = data.get("allow_repeat", False)
+    randomize_image_positions = data.get("randomize_image_positions", False)
+    has_image_positions = bool(
+        (tmpl_registry.get_template(tmpl) or {}).get("has_image_positions")
+    )
     demo_label = {
         "off": "нет",
         "standard": "стандартная",
@@ -83,6 +87,8 @@ def _collect_settings_state(data: dict) -> dict:
         "ajt_show_presentation": (
             tmpl == "acceptability_judgment" and _ajt_has_stimulus2(data)
         ),
+        "has_image_positions": has_image_positions,
+        "randomize_image_positions": randomize_image_positions,
     }
 
 
@@ -96,7 +102,17 @@ def _settings_rows(s: dict) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = [
         ("Рандомизация", "да" if s["randomize"] else "нет", "cfg_randomize"),
     ]
-    if s["has_buttons"]:
+    # для шаблонов с картинками тоггл «позиции кнопок» бессмысленен:
+    # лейблы «1»/«2»/«3» сами по себе позиционные, тасовать их без
+    # перестановки самих картинок нельзя — соответствие сломается.
+    # Вместо него показываем «Перемешивать позиции картинок».
+    if s["has_image_positions"]:
+        rows.append((
+            "Перемешивать позиции картинок",
+            "да" if s["randomize_image_positions"] else "нет",
+            "cfg_randomize_images",
+        ))
+    elif s["has_buttons"]:
         rows.append((
             "Рандомизация позиций кнопок",
             "да" if s["randomize_buttons"] else "нет",
@@ -127,6 +143,67 @@ def _settings_rows(s: dict) -> list[tuple[str, str, str]]:
         "cfg_repeat",
     ))
     return rows
+
+
+def _exp_to_data_like(exp: dict) -> dict:
+    """собрать data-словарь в формате state.data из сохранённого exp,
+    чтобы переиспользовать _collect_settings_state / _settings_rows в
+    карточке активированного/черновика эксперимента."""
+    # demographics_mode восстанавливается тем же способом, что и в
+    # edit_draft (researcher_experiment).
+    if not exp.get("collect_demographics"):
+        demo_mode = "off"
+    elif exp.get("demographics_type") == "custom":
+        demo_mode = "custom"
+    else:
+        demo_mode = "standard"
+
+    # тоггл «Режим подачи» (AJT) показывается, если у проб есть
+    # stimulus2. Сырого csv_data у сохранённого экспа нет, поэтому
+    # ищем прямо в auxiliary трайлов и подаём _ajt_has_stimulus2-у
+    # минимальный csv_data-подобный объект, чтобы он вернул True.
+    has_stimulus2 = False
+    for phase in exp.get("phases", []):
+        for trial in phase.get("trials", []):
+            aux = trial.get("auxiliary") or {}
+            if (aux.get("stimulus2") or "").strip():
+                has_stimulus2 = True
+                break
+        if has_stimulus2:
+            break
+
+    return {
+        "template_type": exp.get("template_type", ""),
+        "randomize": exp.get("randomize_trials", False),
+        "randomize_button_positions": exp.get("randomize_button_positions", False),
+        "randomize_image_positions": exp.get("randomize_image_positions", False),
+        "delete_previous_trials": exp.get("delete_previous_trials", True),
+        "lists_count": exp.get("lists_count", 1),
+        "demographics_mode": demo_mode,
+        "demographics_custom": exp.get("demographics_custom", []),
+        "time_limit": exp.get("time_limit"),
+        "idle_timeout_seconds": exp.get("idle_timeout_seconds", 300),
+        "audio_silence_seconds": exp.get("audio_silence_seconds", 0),
+        "allow_repeat": exp.get("allow_repeat", False),
+        "presentation_mode": exp.get("presentation_mode", "single"),
+        "csv_data": (
+            {"_": [{"auxiliary": {"stimulus2": "1"}}]} if has_stimulus2 else {}
+        ),
+    }
+
+
+def settings_summary_block(exp: dict) -> str:
+    """отформатированный <pre>-блок со сводкой настроек: те же поля,
+    что и в подменю настроек. Используется в карточке эксперимента."""
+    data_like = _exp_to_data_like(exp)
+    s = _collect_settings_state(data_like)
+    rows = _settings_rows(s)
+    summary_rows = [(label, value) for label, value, _ in rows]
+    if not summary_rows:
+        return ""
+    label_w = max(len(label) for label, _ in summary_rows) + 2
+    lines = [f"{label.ljust(label_w)}{value}" for label, value in summary_rows]
+    return "<pre>" + "\n".join(lines) + "</pre>"
 
 
 async def show_config_menu(message_or_cb, state: FSMContext):
@@ -321,15 +398,14 @@ _CONFIG_HELP_PAGE_2 = (
     "Поэтому если хочется компактную горизонтальную шкалу — "
     "не задавайте подписи, оставьте только цифры. Если важно "
     "обозначить полюса словами — будьте готовы к вертикальному виду.\n\n"
-    "<b>🔤 Кнопки ответа</b>\n"
-    "Кастомизация лейблов кнопок доступна только для шаблонов с "
-    "картинками (Picture Selection, Covered Box). По умолчанию лейблы — "
-    "«1», «2» (и «3» для трёх картинок). Их можно переименовать "
-    "(например, «1» → «Левая»). Корректность считается по позиции: "
-    "колонка <i>correct_img</i> в CSV указывает, какая картинка "
-    "правильная, бот подставляет лейбл соответствующей позиции.\n"
-    "Не меняйте порядок лейблов местами — это сместит соответствие "
-    "позиций и сломает проверку корректности.\n\n"
+    "<b>🖼 Перемешивать позиции картинок</b>\n"
+    "Доступно для шаблонов с картинками (Picture Selection, "
+    "Covered Box). Если включено — у каждого участника позиции "
+    "картинок в паре/тройке тасуются случайно. Лейблы кнопок «1», "
+    "«2» (и «3») остаются позиционными: «1» — всегда левая/первая "
+    "картинка из показанных в этой пробе. Корректность считается по "
+    "имени файла из <i>correct_img</i> в CSV, поэтому перемешивание "
+    "ничего не ломает.\n\n"
     "<b>🌟 Правильный ответ в кнопочных шаблонах</b>\n"
     "Для остальных кнопочных шаблонов варианты ответа задаются "
     "колонками <code>opt1..opt6</code> в CSV. Поставьте звёздочку "
@@ -409,6 +485,16 @@ async def toggle_randomize_buttons(callback: types.CallbackQuery, state: FSMCont
     data = await state.get_data()
     await state.update_data(
         randomize_button_positions=not data.get("randomize_button_positions", False)
+    )
+    await show_settings_submenu(callback, state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_randomize_images")
+async def toggle_randomize_images(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    await state.update_data(
+        randomize_image_positions=not data.get("randomize_image_positions", False)
     )
     await show_settings_submenu(callback, state)
 

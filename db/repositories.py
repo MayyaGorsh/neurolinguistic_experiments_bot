@@ -5,12 +5,15 @@ from typing import Optional
 from bson import ObjectId
 
 from db.connection import (
+    db,
     users_col,
     experiments_col,
     sessions_col,
     answers_col,
     media_col,
     mailings_col,
+    get_voice_answers_bucket,
+    get_stimulus_media_bucket,
 )
 
 logger = logging.getLogger("bot")
@@ -75,8 +78,11 @@ async def update_experiment(experiment_id: str, update: dict):
 
 
 async def delete_experiment_cascade(experiment_id: str) -> dict:
-    """удалить эксперимент и все связанные данные: сессии, ответы, медиа.
-    возвращает количество удалённых записей по коллекциям."""
+    """удалить эксперимент и все связанные данные: сессии, ответы, медиа,
+    голосовые блобы, стимульные блобы. Возвращает количество удалённых
+    записей по коллекциям."""
+    voice_res = await delete_voice_blobs_by_experiment(experiment_id)
+    stim_res = await delete_stimulus_blobs_by_experiment(experiment_id)
     answers_res = await answers_col.delete_many({"experiment_id": experiment_id})
     sessions_res = await sessions_col.delete_many({"experiment_id": experiment_id})
     media_res = await media_col.delete_many({"experiment_id": experiment_id})
@@ -84,17 +90,113 @@ async def delete_experiment_cascade(experiment_id: str) -> dict:
         {"_id": ObjectId(experiment_id)}
     )
     logger.info(
-        "удалён эксперимент %s: answers=%d, sessions=%d, media=%d",
+        "удалён эксперимент %s: answers=%d, sessions=%d, media=%d, "
+        "voice_blobs=%d, stim_blobs=%d",
         experiment_id,
         answers_res.deleted_count, sessions_res.deleted_count,
-        media_res.deleted_count,
+        media_res.deleted_count, voice_res, stim_res,
     )
     return {
         "experiment": exp_res.deleted_count,
         "sessions": sessions_res.deleted_count,
         "answers": answers_res.deleted_count,
         "media": media_res.deleted_count,
+        "voice_blobs": voice_res,
+        "stim_blobs": stim_res,
     }
+
+
+# ── голосовые ответы (GridFS) ──
+
+async def save_voice_blob(
+    data: bytes,
+    filename: str,
+    metadata: dict,
+) -> str:
+    """сохранить байты голосового ответа в GridFS, вернуть строковый id."""
+    bucket = get_voice_answers_bucket()
+    oid = await bucket.upload_from_stream(
+        filename, data, metadata=metadata,
+    )
+    return str(oid)
+
+
+async def read_voice_blob(blob_id: str) -> Optional[bytes]:
+    """прочитать байты голосового ответа по id, вернуть None если нет."""
+    bucket = get_voice_answers_bucket()
+    try:
+        stream = await bucket.open_download_stream(ObjectId(blob_id))
+    except Exception as e:
+        logger.warning("voice blob %s не найден: %s", blob_id, e)
+        return None
+    try:
+        return await stream.read()
+    finally:
+        try:
+            await stream.close()
+        except Exception:
+            pass
+
+
+# ── стимульные блобы (GridFS, картинки) ──
+
+async def save_stimulus_blob(
+    data: bytes, filename: str, metadata: dict,
+) -> str:
+    bucket = get_stimulus_media_bucket()
+    oid = await bucket.upload_from_stream(filename, data, metadata=metadata)
+    return str(oid)
+
+
+async def read_stimulus_blob(blob_id: str) -> Optional[bytes]:
+    bucket = get_stimulus_media_bucket()
+    try:
+        stream = await bucket.open_download_stream(ObjectId(blob_id))
+    except Exception as e:
+        logger.warning("stimulus blob %s не найден: %s", blob_id, e)
+        return None
+    try:
+        return await stream.read()
+    finally:
+        try:
+            await stream.close()
+        except Exception:
+            pass
+
+
+async def _delete_blobs_by_experiment(
+    bucket_name: str, bucket, experiment_id: str,
+) -> int:
+    """общая логика удаления GridFS-блобов по metadata.experiment_id.
+    GridFS-бакет с именем X хранит файлы в коллекциях <X>.files /
+    <X>.chunks; в .files лежит наш metadata, по нему и ищем."""
+    files_col = db[f"{bucket_name}.files"]
+    cursor = files_col.find(
+        {"metadata.experiment_id": experiment_id}, {"_id": 1},
+    )
+    count = 0
+    async for doc in cursor:
+        try:
+            await bucket.delete(doc["_id"])
+            count += 1
+        except Exception as e:
+            logger.warning(
+                "не удалось удалить %s blob %s: %s",
+                bucket_name, doc["_id"], e,
+            )
+    return count
+
+
+async def delete_stimulus_blobs_by_experiment(experiment_id: str) -> int:
+    return await _delete_blobs_by_experiment(
+        "stimulus_media", get_stimulus_media_bucket(), experiment_id,
+    )
+
+
+async def delete_voice_blobs_by_experiment(experiment_id: str) -> int:
+    return await _delete_blobs_by_experiment(
+        "voice_answers", get_voice_answers_bucket(), experiment_id,
+    )
 
 
 # ── сессии ──
@@ -243,6 +345,19 @@ async def update_media(media_id: str, update: dict):
     await media_col.update_one(
         {"_id": ObjectId(media_id)},
         {"$set": update},
+    )
+
+
+async def set_media_photo_id(
+    experiment_id: str, filename: str, photo_id: str,
+) -> None:
+    """после первого реального send_media_group / send_photo Telegram
+    возвращает photo file_id — кэшируем его в media.file_id. Так
+    следующие сессии этого же эксперимента сразу пойдут по «быстрой»
+    ветке, без upload'а байтов."""
+    await media_col.update_one(
+        {"experiment_id": experiment_id, "filename": filename},
+        {"$set": {"file_id": photo_id}},
     )
 
 

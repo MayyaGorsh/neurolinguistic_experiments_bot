@@ -6,27 +6,25 @@
 - Video task
 """
 
-from templates.registry import register, get_response_options
+from templates.registry import register
 
 
 # ── Picture selection ──
 # CSV: stimulus, pair_id, img_1_filename, img_2_filename, correct_img (опц.)
 
 def build_picture_selection(trials, config, phase_index=0):
-    import random
-
-    options = get_response_options(config, ["1", "2"])
+    # позиции картинок в паре фиксируем как в CSV (img_1, img_2);
+    # перетасовка по сессии — отдельный тоггл randomize_image_positions,
+    # обрабатывается в runner.prepare_trials_for_session, чтобы у
+    # каждого участника был свой случайный порядок.
+    options = ["1", "2"]
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
         img2 = aux.get("img_2_filename", "")
-        correct = aux.get("correct_img", "")
+        correct = (aux.get("correct_img") or "").strip()
 
-        # рандомизация порядка картинок в паре
         images = [img1, img2]
-        if config.get("randomize", False):
-            random.shuffle(images)
-
         t["stimulus_metadata"] = {
             "pair_id": aux.get("pair_id", ""),
             "images": images,
@@ -35,11 +33,11 @@ def build_picture_selection(trials, config, phase_index=0):
         }
         t["response_options"] = options
 
-        if correct:
-            if correct.strip() == images[0]:
-                t["correct_answer"] = options[0]
-            elif correct.strip() == images[1]:
-                t["correct_answer"] = options[1]
+        # Сохраняем имя файла как correct_answer — оно инвариантно
+        # к перетасовке позиций. raw_response в on_answer_button тоже
+        # резолвится в filename, is_correct = строковое сравнение.
+        if correct and correct in (images[0], images[1]):
+            t["correct_answer"] = correct
 
     return {
         "phase_index": phase_index,
@@ -49,6 +47,9 @@ def build_picture_selection(trials, config, phase_index=0):
         "response_type": "buttons",
         "trials": trials,
         "randomize_order": config.get("randomize", False),
+        "randomize_image_positions": config.get(
+            "randomize_image_positions", False,
+        ),
         "time_limit": config.get("time_limit"),
         "settings": {"is_picture_selection": True},
     }
@@ -62,9 +63,17 @@ register("picture_selection", {
                       "correct_img"],
     },
     "build_phase": build_picture_selection,
-    "export_columns": ["pair_id", "img_1", "img_2"],
+    # img_1/img_2 — то, что реально показано на экране (после
+    # возможной перетасовки позиций); correct_img — имя файла
+    # правильной картинки из CSV. raw_response в выгрузке тоже имя
+    # файла, поэтому сравнение «raw_response == correct_img» —
+    # ровно то, что нужно для анализа.
+    "export_columns": ["pair_id", "img_1", "img_2", "correct_img"],
     "phases_info": ["Picture Selection"],
-    "default_response_options": {"main": ["1", "2"]},
+    # лейблы кнопок — только цифры по позиции, кастомизация лейблов не
+    # имеет смысла для шаблонов с картинками (нужен порядок «1=левая»
+    # / «2=правая», иначе сломается соответствие кнопок и положений).
+    "has_image_positions": True,
     "example_caption": (
         "<b>Пример CSV для Picture Selection</b>\n\n"
         "Каждая строка — одна проба: предложение и пара изображений, "
@@ -88,30 +97,30 @@ register("picture_selection", {
 # CSV: stimulus, pair_id, img_1_filename, img_2_filename, img_3_filename, correct_img (опц.)
 
 def build_covered_box(trials, config, phase_index=0):
-    options = get_response_options(config, ["1", "2", "3"])
+    # позиции картинок берём как в CSV. Перетасовка по сессии —
+    # отдельный тоггл randomize_image_positions; обрабатывается в
+    # runner.prepare_trials_for_session.
+    options = ["1", "2", "3"]
     for t in trials:
         aux = t.get("auxiliary", {})
         img1 = aux.get("img_1_filename", "")
         img2 = aux.get("img_2_filename", "")
         img3 = aux.get("img_3_filename", "")
-        correct = aux.get("correct_img", "")
+        correct = (aux.get("correct_img") or "").strip()
 
+        images = [img1, img2, img3]
         t["stimulus_metadata"] = {
             "pair_id": aux.get("pair_id", ""),
+            "images": images,
             "img_1": img1,
             "img_2": img2,
             "img_3": img3,
         }
         t["response_options"] = options
 
-        if correct:
-            correct = correct.strip()
-            if correct == img1:
-                t["correct_answer"] = options[0]
-            elif correct == img2:
-                t["correct_answer"] = options[1]
-            elif correct == img3:
-                t["correct_answer"] = options[2]
+        # correct_answer = имя файла, см. комментарий в build_picture_selection.
+        if correct and correct in images:
+            t["correct_answer"] = correct
 
     return {
         "phase_index": phase_index,
@@ -124,6 +133,9 @@ def build_covered_box(trials, config, phase_index=0):
         "response_type": "buttons",
         "trials": trials,
         "randomize_order": config.get("randomize", False),
+        "randomize_image_positions": config.get(
+            "randomize_image_positions", False,
+        ),
         "time_limit": config.get("time_limit"),
         "settings": {"is_covered_box": True},
     }
@@ -137,9 +149,9 @@ register("covered_box", {
                       "img_3_filename", "correct_img"],
     },
     "build_phase": build_covered_box,
-    "export_columns": ["pair_id", "img_1", "img_2", "img_3"],
+    "export_columns": ["pair_id", "img_1", "img_2", "img_3", "correct_img"],
     "phases_info": ["Covered Box"],
-    "default_response_options": {"main": ["1", "2", "3"]},
+    "has_image_positions": True,
     "example_caption": (
         "<b>Пример CSV для Covered Box</b>\n\n"
         "Каждая строка — одна проба: предложение и три картинки. "

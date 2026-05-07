@@ -458,3 +458,134 @@
 2026-05-07 14:28:02 | DEBUG   | bot | stale callback от 540373857: msg=1661, active=1662, data=my_experiments
 2026-05-07 14:28:31 | INFO    | bot | сессия 69fc7723e4753a6e8b64a858 завершена
 2026-05-07 14:30:46 | INFO    | bot | эксперимент 69fa25627ed8d07798c8d1e7 обновлён пользователем 540373857
+2026-05-07 14:36:01 | INFO    | bot | создан эксперимент 69fc7921e4753a6e8b64a86b
+2026-05-07 14:36:01 | INFO    | bot | эксперимент 69fc7921e4753a6e8b64a86b создан пользователем 540373857
+2026-05-07 14:36:06 | INFO    | bot | эксперимент 69fc7921e4753a6e8b64a86b обновлён пользователем 540373857
+2026-05-07 14:41:17 | INFO    | bot | эксперимент 69fc7921e4753a6e8b64a86b обновлён пользователем 540373857
+2026-05-07 15:34:35 | INFO    | bot | эксперимент 69fc7921e4753a6e8b64a86b обновлён пользователем 540373857
+2026-05-07 15:36:20 | INFO    | bot | deep link от 7828426430: exp_QXn5kuralME
+2026-05-07 15:36:22 | INFO    | bot | сессия 69fc8746e4753a6e8b64a876: user=7828426430, exp=69fc7921e4753a6e8b64a86b, list=None
+2026-05-07 15:36:58 | INFO    | bot | сессия 69fc8706e4753a6e8b64a872 завершена
+2026-05-07 15:37:44 | INFO    | bot | сессия 69fc8746e4753a6e8b64a876 завершена
+2026-05-07 15:53:59 | INFO    | bot | бот остановлен
+2026-05-07 15:54:07 | INFO    | bot | бот запущен
+2026-05-07 15:54:52 | INFO    | bot | deep link от 7828426430: exp_QXn5kuralME
+2026-05-07 15:57:23 | INFO    | bot | бот остановлен
+2026-05-07 15:57:29 | INFO    | bot | бот запущен
+2026-05-07 15:57:39 | INFO    | bot | deep link от 7828426430: exp_QXn5kuralME
+2026-05-07 15:57:42 | INFO    | bot | сессия 69fc8c4666c8d45338753c26: user=7828426430, exp=69fc7921e4753a6e8b64a86b, list=None
+2026-05-07 15:58:56 | INFO    | bot | сессия 69fc8c4666c8d45338753c26 завершена
+2026-05-07 16:09:54 | INFO    | bot | бот остановлен
+2026-05-07 16:10:01 | INFO    | bot | бот запущен
+2026-05-07 16:10:32 | INFO    | bot | эксперимент 69fc7921e4753a6e8b64a86b обновлён пользователем 540373857
+2026-05-07 16:15:05 | INFO    | bot | deep link от 7828426430: exp_QXn5kuralME
+2026-05-07 16:15:07 | INFO    | bot | сессия 69fc905bc339e261c8a00b64: user=7828426430, exp=69fc7921e4753a6e8b64a86b, list=None
+2026-05-07 16:17:54 | INFO    | bot | сессия 69fc905bc339e261c8a00b64 завершена
+2026-05-07 16:29:48 | INFO    | bot | deep link от 7828426430: exp_QXn5kuralME
+2026-05-07 16:30:01 | INFO    | bot | сессия 69fc93d9c339e261c8a00b6b: user=7828426430, exp=69fc7921e4753a6e8b64a86b, list=None
+2026-05-07 16:31:33 | INFO    | bot | сессия 69fc93d9c339e261c8a00b6b завершена
+2026-05-07 16:45:16 | INFO    | bot | создан эксперимент 69fc976cc339e261c8a00b7e
+2026-05-07 16:45:16 | INFO    | bot | эксперимент 69fc976cc339e261c8a00b7e создан пользователем 540373857
+2026-05-07 16:51:30 | INFO    | bot | эксперимент 69fc976cc339e261c8a00b7e обновлён пользователем 540373857
+2026-05-07 16:56:41 | INFO    | bot | бот остановлен
+2026-05-07 16:56:48 | INFO    | bot | бот запущен
+2026-05-07 16:58:39 | INFO    | bot | создан эксперимент 69fc9a8f4073fac664a5d135
+2026-05-07 16:58:39 | INFO    | bot | эксперимент 69fc9a8f4073fac664a5d135 создан пользователем 540373857
+2026-05-07 17:20:44 | INFO    | bot | бот остановлен
+2026-05-07 17:20:51 | INFO    | bot | бот запущен
+2026-05-07 17:32:40 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-07 17:39:58 | INFO    | bot | создан эксперимент 69fca43e15f88d6eacb44f43
+2026-05-07 17:39:58 | INFO    | bot | эксперимент 69fca43e15f88d6eacb44f43 создан пользователем 540373857
+2026-05-07 17:47:30 | INFO    | bot | deep link от 7828426430: exp_utGAsfmbUGI
+2026-05-07 17:47:41 | INFO    | bot | сессия 69fca60d15f88d6eacb44f4d: user=7828426430, exp=69fca43e15f88d6eacb44f43, list=None
+2026-05-07 17:55:19 | INFO    | bot | бот остановлен
+2026-05-07 17:55:27 | INFO    | bot | бот запущен
+2026-05-07 17:55:40 | INFO    | bot | deep link от 7828426430: exp_utGAsfmbUGI
+2026-05-07 17:55:44 | INFO    | bot | сессия 69fca7f09cf0a5ee8cf62230: user=7828426430, exp=69fca43e15f88d6eacb44f43, list=None
+2026-05-07 17:55:47 | WARNING | bot | send_media_group упал (Telegram server says - Bad Request: can't use file of type Document as Photo) — конвертирую картинки в photo через download+reupload
+2026-05-07 18:17:19 | INFO    | bot | deep link от 7828426430: exp_utGAsfmbUGI
+2026-05-07 18:17:26 | INFO    | bot | сессия 69fcad069cf0a5ee8cf62231: user=7828426430, exp=69fca43e15f88d6eacb44f43, list=None
+2026-05-07 18:17:28 | WARNING | bot | send_media_group упал (Telegram server says - Bad Request: can't use file of type Document as Photo) — конвертирую картинки в photo через download+reupload
+2026-05-07 18:21:57 | INFO    | bot | бот остановлен
+2026-05-07 18:22:05 | INFO    | bot | бот запущен
+2026-05-07 18:22:06 | INFO    | bot | deep link от 7828426430: exp_utGAsfmbUGI
+2026-05-07 18:22:07 | WARNING | bot | send_media_group упал (Telegram server says - Bad Request: can't use file of type Document as Photo) — конвертирую картинки в photo через download+reupload
+2026-05-07 18:22:29 | WARNING | bot | send_media_group упал (Telegram server says - Bad Request: can't use file of type Document as Photo) — конвертирую картинки в photo через download+reupload
+2026-05-07 18:48:22 | DEBUG   | bot | stale callback от 540373857: msg=1872, active=1884, data=csv_back_to_manifest
+2026-05-07 18:52:14 | INFO    | bot | создан эксперимент 69fcb52ec7bcbda0d94ac764
+2026-05-07 18:52:14 | INFO    | bot | эксперимент 69fcb52ec7bcbda0d94ac764 создан пользователем 540373857
+2026-05-07 18:56:02 | WARNING | bot | конвертация картинки meerkat_photo.jpg в photo file_id не удалась: Telegram server says - Bad Request: file is too big
+2026-05-07 19:00:46 | WARNING | bot | send_media_group упал (Telegram server says - Bad Request: can't use file of type Document as Photo) — конвертирую картинки в photo через download+reupload
+2026-05-07 19:43:02 | INFO    | bot | бот остановлен
+2026-05-07 19:43:11 | INFO    | bot | бот запущен
+2026-05-07 19:45:46 | INFO    | bot | бот остановлен
+2026-05-07 19:45:52 | INFO    | bot | бот запущен
+2026-05-07 19:45:59 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-07 19:51:07 | INFO    | bot | бот остановлен
+2026-05-07 19:51:14 | INFO    | bot | бот запущен
+2026-05-07 19:51:25 | INFO    | bot | удалён эксперимент 69fca43e15f88d6eacb44f43: answers=1, sessions=3, media=9, voice_blobs=0, stim_blobs=0
+2026-05-07 19:51:25 | INFO    | bot | пользователь 540373857 удалил эксперимент 69fca43e15f88d6eacb44f43 (Picture selection тест 2)
+2026-05-07 19:51:33 | INFO    | bot | удалён эксперимент 69fc976cc339e261c8a00b7e: answers=0, sessions=0, media=0, voice_blobs=0, stim_blobs=0
+2026-05-07 19:51:33 | INFO    | bot | пользователь 540373857 удалил эксперимент 69fc976cc339e261c8a00b7e (Picture selection test 1)
+2026-05-07 19:51:39 | INFO    | bot | удалён эксперимент 69fc9a8f4073fac664a5d135: answers=0, sessions=1, media=9, voice_blobs=0, stim_blobs=0
+2026-05-07 19:51:39 | INFO    | bot | пользователь 540373857 удалил эксперимент 69fc9a8f4073fac664a5d135 (Picture selection test 2)
+2026-05-07 19:52:48 | INFO    | bot | создан эксперимент 69fcc360b9a0557216ab4632
+2026-05-07 19:52:48 | INFO    | bot | эксперимент 69fcc360b9a0557216ab4632 создан пользователем 540373857
+2026-05-07 19:56:32 | INFO    | bot | сессия 69fcc419b9a0557216ab4720 завершена
+2026-05-07 19:58:59 | INFO    | bot | удалён эксперимент 69fcb52ec7bcbda0d94ac764: answers=3, sessions=1, media=9, voice_blobs=0, stim_blobs=0
+2026-05-07 19:58:59 | INFO    | bot | пользователь 540373857 удалил эксперимент 69fcb52ec7bcbda0d94ac764 (Picture selection тест 3)
+2026-05-07 20:03:26 | INFO    | bot | бот остановлен
+2026-05-07 20:03:32 | INFO    | bot | бот запущен
+2026-05-07 20:16:02 | INFO    | bot | бот остановлен
+2026-05-07 20:16:10 | INFO    | bot | бот запущен
+2026-05-07 20:16:20 | INFO    | bot | /start: закрыто 1 старых сессий пользователя 540373857
+2026-05-07 20:16:32 | WARNING | bot | send_media_group упал на кэшированных id (Telegram server says - Bad Request: can't use file of type Document as Photo) — пересобираю из GridFS-байт
+2026-05-07 20:17:03 | WARNING | bot | send_media_group упал на кэшированных id (Telegram server says - Bad Request: can't use file of type Document as Photo) — пересобираю из GridFS-байт
+2026-05-07 20:17:10 | WARNING | bot | send_media_group упал на кэшированных id (Telegram server says - Bad Request: can't use file of type Document as Photo) — пересобираю из GridFS-байт
+2026-05-07 20:17:20 | WARNING | bot | send_media_group упал на кэшированных id (Telegram server says - Bad Request: can't use file of type Document as Photo) — пересобираю из GridFS-байт
+2026-05-07 20:17:26 | WARNING | bot | send_media_group упал на кэшированных id (Telegram server says - Bad Request: can't use file of type Document as Photo) — пересобираю из GridFS-байт
+2026-05-07 20:17:32 | INFO    | bot | сессия 69fcc8ece6ace4dbc9006a32 завершена
+2026-05-07 20:18:02 | INFO    | bot | эксперимент 69fcc360b9a0557216ab4632 обновлён пользователем 540373857
+2026-05-07 20:24:23 | INFO    | bot | бот остановлен
+2026-05-07 20:24:31 | INFO    | bot | бот запущен
+2026-05-07 20:24:52 | INFO    | bot | сессия 69fccad1c9146d849d18d56b завершена
+2026-05-07 20:38:11 | INFO    | bot | бот остановлен
+2026-05-07 20:38:20 | INFO    | bot | бот запущен
+2026-05-07 20:38:58 | INFO    | bot | эксперимент 69fcc360b9a0557216ab4632 обновлён пользователем 540373857
+2026-05-07 20:39:26 | INFO    | bot | deep link от 7828426430: exp_367qe4j_dGU
+2026-05-07 20:39:29 | INFO    | bot | сессия 69fcce51a75b3a2e8c8a4137: user=7828426430, exp=69fcc360b9a0557216ab4632, list=None
+2026-05-07 20:39:49 | INFO    | bot | сессия 69fcce51a75b3a2e8c8a4137 завершена
+2026-05-07 20:41:12 | INFO    | bot | эксперимент 69fcc360b9a0557216ab4632 обновлён пользователем 540373857
+2026-05-07 20:47:39 | INFO    | bot | бот остановлен
+2026-05-07 20:47:49 | INFO    | bot | бот запущен
+2026-05-07 20:50:54 | INFO    | bot | бот остановлен
+2026-05-07 20:51:01 | INFO    | bot | бот запущен
+2026-05-07 20:51:53 | INFO    | bot | сессия 69fcd11ac23c5999e9db4c4c завершена
+2026-05-07 21:05:26 | INFO    | bot | создан эксперимент 69fcd466c23c5999e9db4c52
+2026-05-07 21:05:26 | INFO    | bot | эксперимент 69fcd466c23c5999e9db4c52 создан пользователем 540373857
+2026-05-07 21:09:58 | INFO    | bot | эксперимент 69fcd466c23c5999e9db4c52 обновлён пользователем 540373857
+2026-05-07 21:11:11 | INFO    | bot | deep link от 7828426430: exp_z3wjn5_fBHo
+2026-05-07 21:11:13 | INFO    | bot | сессия 69fcd5c1c23c5999e9db4c68: user=7828426430, exp=69fcd466c23c5999e9db4c52, list=None
+2026-05-07 21:11:38 | INFO    | bot | сессия 69fcd5c1c23c5999e9db4c68 завершена
+2026-05-07 21:13:34 | INFO    | bot | эксперимент 69fcd466c23c5999e9db4c52 обновлён пользователем 540373857
+2026-05-07 21:14:21 | INFO    | bot | сессия 69fcd662c23c5999e9db4c6e завершена
+2026-05-07 21:15:49 | INFO    | bot | создан эксперимент 69fcd6d5c23c5999e9db4c74
+2026-05-07 21:15:49 | INFO    | bot | эксперимент 69fcd6d5c23c5999e9db4c74 создан пользователем 540373857
+2026-05-07 21:16:02 | INFO    | bot | эксперимент 69fcd6d5c23c5999e9db4c74 обновлён пользователем 540373857
+2026-05-07 21:18:33 | INFO    | bot | эксперимент 69fcd6d5c23c5999e9db4c74 обновлён пользователем 540373857
+2026-05-07 21:20:36 | INFO    | bot | deep link от 7828426430: exp_5XS96M4UW7A
+2026-05-07 21:20:41 | INFO    | bot | сессия 69fcd7f9c23c5999e9db4c87: user=7828426430, exp=69fcd6d5c23c5999e9db4c74, list=None
+2026-05-07 21:20:50 | INFO    | bot | deep link от 7828426430: exp_5XS96M4UW7A
+2026-05-07 21:21:18 | INFO    | bot | сессия 69fcd7f9c23c5999e9db4c87 завершена
+2026-05-07 21:21:24 | INFO    | bot | deep link от 7828426430: exp_5XS96M4UW7A
+2026-05-07 21:21:27 | INFO    | bot | сессия 69fcd827c23c5999e9db4c8e: user=7828426430, exp=69fcd6d5c23c5999e9db4c74, list=None
+2026-05-07 21:23:47 | INFO    | bot | создан эксперимент 69fcd8b3c23c5999e9db4c8f
+2026-05-07 21:23:47 | INFO    | bot | эксперимент 69fcd8b3c23c5999e9db4c8f создан пользователем 540373857
+2026-05-07 21:28:25 | INFO    | bot | deep link от 7828426430: exp_aaBEw2VC7cA
+2026-05-07 21:28:41 | INFO    | bot | deep link от 7828426430: exp_aaBEw2VC7cA
+2026-05-07 21:28:43 | INFO    | bot | сессия 69fcd9dbc23c5999e9db4c94: user=7828426430, exp=69fcd8b3c23c5999e9db4c8f, list=None
+2026-05-07 21:30:36 | INFO    | bot | сессия 69fcd9dbc23c5999e9db4c94 завершена
+2026-05-07 21:39:23 | INFO    | bot | бот остановлен
+2026-05-07 21:39:30 | INFO    | bot | бот запущен
+2026-05-07 21:41:21 | INFO    | bot | создан эксперимент 69fcdcd1fdb4dda716fde2f9
+2026-05-07 21:41:21 | INFO    | bot | эксперимент 69fcdcd1fdb4dda716fde2f9 создан пользователем 540373857
