@@ -12,16 +12,15 @@ logger = logging.getLogger("bot")
 
 
 def _detect_delimiter(first_line: str) -> str:
-    """определить разделитель CSV по первой строке (заголовку).
+    """разделитель CSV — всегда «;».
 
-    поддерживаем только «;» и табуляцию: запятая опасна, потому что
-    встречается внутри стимулов (напр., в предложениях) — без строгого
-    квотирования такой CSV распарсится криво.
+    раньше детектили между «;» и табуляцией, но это путало лингвистов
+    (Excel мог сохранить с табом, а пример был с «;») и иногда тихо
+    парсило «не то». теперь единый формат: только точка с запятой.
+    если файл сохранён с другим разделителем — DictReader увидит одну
+    «жирную» колонку и валидация поймает это как «не найдены колонки».
     """
-    candidates = [";", "\t"]
-    counts = {d: first_line.count(d) for d in candidates}
-    best = max(counts, key=lambda d: (counts[d], d == ";"))
-    return best if counts[best] > 0 else ";"
+    return ";"
 
 
 def parse_csv_text(text: str) -> list[dict]:
@@ -115,10 +114,21 @@ def rows_to_trials(rows: list[dict], mapping: dict) -> list[dict]:
                 val = cell.strip()
                 if not val:
                     continue
-                # помечен * — правильный ответ
+                # помечен * — правильный ответ. для multiple_choice в
+                # одной пробе таких меток может быть несколько —
+                # накапливаем их в list; для одиночного выбора остаётся
+                # строка (runner умеет принимать оба формата —
+                # см. ветки isinstance(correct_answer, list) в
+                # process_answer).
                 if val.startswith("*"):
                     val = val[1:].strip()
-                    trial["correct_answer"] = val
+                    existing = trial.get("correct_answer")
+                    if existing is None:
+                        trial["correct_answer"] = val
+                    elif isinstance(existing, list):
+                        existing.append(val)
+                    else:
+                        trial["correct_answer"] = [existing, val]
                 options.append(val)
             trial["response_options"] = options
 

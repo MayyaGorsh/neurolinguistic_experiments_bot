@@ -251,10 +251,9 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
         )
         return
 
-    await callback.answer()
-
     experiment = await repo.get_experiment(session["experiment_id"])
     if not experiment:
+        await callback.answer()
         return
 
     prepared = session.get("prepared_phases") or experiment["phases"]
@@ -263,6 +262,72 @@ async def on_answer_button(callback: types.CallbackQuery, bot: Bot):
 
     phase = prepared[current_phase]
     trial = phase["trials"][current_trial]
+
+    # multiple_choice: callback'и идут двумя видами —
+    #   _mc_K  — toggle K-го варианта (не финализирует, RT ещё идёт);
+    #   _mcdone — финализация выбора и отправка ответа.
+    # parts: ans, sid, pi, ti, "mc" или "mcdone", [K]
+    if option_str == "mc" and len(parts) >= 6:
+        try:
+            idx = int(parts[5])
+        except ValueError:
+            await callback.answer()
+            return
+        options = trial.get("response_options", [])
+        if not (0 <= idx < len(options)):
+            await callback.answer()
+            return
+        chosen = list(session.get("pending_multi") or [])
+        # toggle: если уже выбран — убираем (теряет позицию), иначе
+        # добавляем в конец (фиксируем порядок по клику).
+        if idx in chosen:
+            chosen.remove(idx)
+        else:
+            chosen.append(idx)
+        await repo.update_session(session_id, {"pending_multi": chosen})
+        new_kb = runner.build_response_keyboard(
+            trial, phase, session_id, current_phase, current_trial,
+            selected=chosen,
+        )
+        try:
+            await callback.message.edit_reply_markup(reply_markup=new_kb)
+        except Exception:
+            pass
+        await callback.answer()
+        return
+
+    if option_str == "mcdone":
+        chosen = list(session.get("pending_multi") or [])
+        if not chosen:
+            await callback.answer(
+                "Выберите хотя бы один вариант.", show_alert=True,
+            )
+            return
+        options = trial.get("response_options", [])
+        chosen_texts = [
+            options[i] for i in chosen if 0 <= i < len(options)
+        ]
+        # очищаем pending_multi сразу, чтобы повторный клик «Готово»
+        # ничего не пересохранил.
+        await repo.update_session(session_id, {"pending_multi": []})
+        await callback.answer()
+        # raw_response для MC — все выбранные варианты в порядке клика,
+        # склеенные «, ». is_correct (общий) для MC оставляем пустым:
+        # содержательная корректность раскладывается в пары
+        # ans_K / is_correct_K (см. export.py).
+        await runner.process_answer(
+            bot, callback.from_user.id, session, exp_copy,
+            ", ".join(chosen_texts),
+            chosen[0] if chosen else None,
+            message_id=callback.message.message_id,
+            extra_metadata={
+                "mc_chosen": chosen_texts,
+                "mc_chosen_indices": chosen,
+            },
+        )
+        return
+
+    await callback.answer()
 
     # определяем текст ответа
     if option_str == "next":

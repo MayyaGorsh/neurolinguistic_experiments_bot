@@ -51,6 +51,15 @@ def _collect_settings_state(data: dict) -> dict:
     audio_silence = int(data.get("audio_silence_seconds", 0) or 0)
     audio_silence_label = "нет" if audio_silence <= 0 else f"{audio_silence} сек"
     is_audio_template = tmpl in ("forced_choice", "sentence_repetition")
+    # для free_form считаем шаблон «аудиовым», если хоть одна его фаза
+    # имеет stimulus_type == "audio" — тогда показываем глобальный
+    # cfg_audio_silence (тишина при ре-аплоаде файла — глобальный
+    # параметр и для free_form тоже).
+    if tmpl == "free_form":
+        ff_phases = data.get("free_form_phases") or []
+        is_audio_template = any(
+            p.get("stimulus_type") == "audio" for p in ff_phases
+        )
     allow_repeat = data.get("allow_repeat", False)
     randomize_image_positions = data.get("randomize_image_positions", False)
     has_image_positions = bool(
@@ -98,26 +107,35 @@ def _settings_rows(s: dict) -> list[tuple[str, str, str]]:
 
     используется и в сводке show_config_menu, и в кнопках
     show_settings_submenu — чтобы оба экрана показывали один и тот же
-    набор и не разъезжались при добавлении новых настроек."""
-    rows: list[tuple[str, str, str]] = [
-        ("Рандомизация", "да" if s["randomize"] else "нет", "cfg_randomize"),
-    ]
+    набор и не разъезжались при добавлении новых настроек.
+
+    в free_form `randomize_order`, `time_limit`, `randomize_button_
+    positions`, `randomize_image_positions` живут на уровне фазы и
+    редактируются в free_form-конструкторе, поэтому в глобальное
+    меню их не выносим."""
+    is_free_form = s["tmpl"] == "free_form"
+    rows: list[tuple[str, str, str]] = []
+    if not is_free_form:
+        rows.append((
+            "Рандомизация", "да" if s["randomize"] else "нет", "cfg_randomize",
+        ))
     # для шаблонов с картинками тоггл «позиции кнопок» бессмысленен:
     # лейблы «1»/«2»/«3» сами по себе позиционные, тасовать их без
     # перестановки самих картинок нельзя — соответствие сломается.
     # Вместо него показываем «Перемешивать позиции картинок».
-    if s["has_image_positions"]:
-        rows.append((
-            "Перемешивать позиции картинок",
-            "да" if s["randomize_image_positions"] else "нет",
-            "cfg_randomize_images",
-        ))
-    elif s["has_buttons"]:
-        rows.append((
-            "Рандомизация позиций кнопок",
-            "да" if s["randomize_buttons"] else "нет",
-            "cfg_randomize_buttons",
-        ))
+    if not is_free_form:
+        if s["has_image_positions"]:
+            rows.append((
+                "Перемешивать позиции картинок",
+                "да" if s["randomize_image_positions"] else "нет",
+                "cfg_randomize_images",
+            ))
+        elif s["has_buttons"]:
+            rows.append((
+                "Рандомизация позиций кнопок",
+                "да" if s["randomize_buttons"] else "нет",
+                "cfg_randomize_buttons",
+            ))
     if s["ajt_show_presentation"]:
         rows.append((
             "Режим подачи", s["presentation_label"], "cfg_presentation_mode",
@@ -130,9 +148,10 @@ def _settings_rows(s: dict) -> list[tuple[str, str, str]]:
         ),
         ("Распределение по листам", s["lists_label"], "cfg_lists"),
         ("Демография", s["demo_label"], "cfg_demographics"),
-        ("Тайм-аут", s["timeout_value"], "cfg_timeout"),
-        ("Перерыв до сброса", s["idle_label"], "cfg_idle_timeout"),
     ]
+    if not is_free_form:
+        rows.append(("Тайм-аут", s["timeout_value"], "cfg_timeout"))
+    rows.append(("Перерыв до сброса", s["idle_label"], "cfg_idle_timeout"))
     if s["is_audio_template"]:
         rows.append((
             "Тишина в аудио", s["audio_silence_label"], "cfg_audio_silence",
@@ -189,6 +208,12 @@ def _exp_to_data_like(exp: dict) -> dict:
         "csv_data": (
             {"_": [{"auxiliary": {"stimulus2": "1"}}]} if has_stimulus2 else {}
         ),
+        # для free_form summary должна понимать, есть ли аудио-фаза
+        # (тогда показывать «Тишина в аудио»). фазы кладём как есть.
+        "free_form_phases": (
+            exp.get("phases", [])
+            if exp.get("template_type") == "free_form" else []
+        ),
     }
 
 
@@ -225,16 +250,45 @@ async def show_config_menu(message_or_cb, state: FSMContext):
     summary_lines = [f"{label.ljust(label_w)}{value}" for label, value in summary_rows]
     summary_block = "<pre>" + "\n".join(summary_lines) + "</pre>"
 
-    text = (
-        "<b>Настройки эксперимента</b>\n\n"
-        f"Шаблон: {tmpl}\n\n"
-        f"{summary_block}"
-    )
+    text_parts = [
+        "<b>Настройки эксперимента</b>",
+        "",
+        f"Шаблон: {tmpl}",
+    ]
+    if tmpl == "free_form":
+        n_phases = len(data.get("free_form_phases") or [])
+        text_parts.append("")
+        text_parts.append(
+            "<i>Фаза — это набор проб с одним типом стимула и одним типом "
+            "ответа. Например, если вы сначала показываете слова и просите "
+            "решить «слово/не слово», а затем те же слова оцениваете по "
+            "Ликерту — это две фазы. Если стимулы однородные (все картинки + "
+            "выбор подписи), хватит одной.</i>"
+        )
+        if n_phases == 0:
+            text_parts.append(
+                "\n⚠️ Фаз пока нет — добавьте хотя бы одну, чтобы сохранить "
+                "эксперимент."
+            )
+    text_parts += ["", summary_block]
+    text = "\n".join(text_parts)
 
     buttons: list[list[InlineKeyboardButton]] = []
     if tmpl != "free_form":
         buttons.append([InlineKeyboardButton(
             text="📎 Загрузить CSV", callback_data="cfg_upload_csv",
+        )])
+    else:
+        # для free_form CSV и инструкции живут внутри конструктора
+        # фаз — кнопкой возвращаемся в free_form-flow.
+        n_phases = len(data.get("free_form_phases") or [])
+        ph_label = (
+            "🧱 Редактировать фазы — нет"
+            if n_phases == 0 else
+            f"🧱 Редактировать фазы — {n_phases}"
+        )
+        buttons.append([InlineKeyboardButton(
+            text=ph_label, callback_data="cfg_edit_ff_phases",
         )])
     buttons.append([InlineKeyboardButton(
         text="⚙️ Настроить эксперимент", callback_data="cfg_settings_submenu",
@@ -360,18 +414,24 @@ _CONFIG_HELP_PAGE_2 = (
     "<b>⏱ Тайм-аут и время реакции (RT)</b>\n"
     "Ограничение времени (в секундах) на ответ по каждому стимулу. "
     "Если участник не успел — ответ засчитывается как пропуск, "
-    "эксперимент идёт дальше. «Нет» — времени неограниченно.\n"
-    "<b>Важно про RT в открытых ответах.</b> В пробах с кнопками "
-    "(<i>buttons</i>, <i>likert</i>, <i>multiple_choice</i>) RT "
-    "измеряется от показа стимула до нажатия кнопки. "
-    "В <i>open_text</i> и <i>voice</i> RT — это время от показа стимула "
-    "до <b>отправки</b> сообщения, то есть включает и набор/запись, "
-    "а не только задержку до начала ответа. Telegram не уведомляет бота "
-    "о том, что пользователь начал печатать или удерживать запись, "
-    "поэтому «чистое» время до начала ответа измерить нельзя. "
-    "Тайм-аут в этих пробах тоже считается до отправки сообщения: "
-    "если за N секунд участник не <i>отправил</i> ответ — ставится "
-    "пропуск, даже если он печатал или говорил.\n\n"
+    "эксперимент идёт дальше. «Нет» — времени неограниченно.\n\n"
+    "<b>Как считается RT по типам ответа:</b>\n"
+    "• <i>buttons</i>, <i>likert</i> — от показа стимула до нажатия "
+    "кнопки. Это «чистый» RT, минимум шумов.\n"
+    "• <i>multiple_choice</i> — от показа стимула до нажатия кнопки "
+    "<b>«Готово»</b>. Промежуточные клики по чекбоксам (⬜→✅) на RT "
+    "не влияют, фиксируется только момент финализации выбора.\n"
+    "• <i>buttons_then_text</i> — RT считается на первом шаге, "
+    "от показа стимула до нажатия кнопки. Текст-обоснование на "
+    "втором шаге пишется без отдельного измерения RT.\n"
+    "• <i>open_text</i>, <i>voice</i> — RT — это время от показа "
+    "стимула до <b>отправки</b> сообщения, то есть включает и "
+    "набор/запись, а не только задержку до начала ответа. Telegram "
+    "не уведомляет бота о том, что пользователь начал печатать или "
+    "удерживать запись, поэтому «чистое» время до начала ответа "
+    "измерить нельзя. Тайм-аут в этих пробах тоже считается до "
+    "отправки сообщения: если за N секунд участник не <i>отправил</i> "
+    "ответ — ставится пропуск, даже если он печатал или говорил.\n\n"
     "<b>⏸ Перерыв до сброса</b>\n"
     "Сколько секунд бездействия можно допустить, прежде чем сессия "
     "участника закроется. Если участник отошёл, а потом вернулся "
@@ -436,6 +496,16 @@ async def show_config_help_page_2(callback: types.CallbackQuery, state: FSMConte
         [InlineKeyboardButton(text="← В настройки", callback_data="cfg_back_to_settings")],
     ])
     await _render_screen(callback, _CONFIG_HELP_PAGE_2, kb, state=state)
+
+
+@router.callback_query(CreateExperiment.configuring, F.data == "cfg_edit_ff_phases")
+async def cfg_edit_ff_phases(callback: types.CallbackQuery, state: FSMContext):
+    """вход обратно в free_form-конструктор фаз (тип/CSV/per-phase
+    настройки). show_config_menu выставил CreateExperiment.configuring;
+    free_form.start_free_form переключит state в FreeFormSetup.*."""
+    await callback.answer()
+    from handlers.free_form import start_free_form
+    await start_free_form(callback, state)
 
 
 @router.callback_query(CreateExperiment.configuring, F.data == "cfg_back")

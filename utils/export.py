@@ -65,6 +65,25 @@ async def export_experiment_csv(experiment_id: str) -> str:
     export_columns = []
     if tmpl_info:
         export_columns = tmpl_info.get("export_columns", [])
+    elif template_type == "free_form":
+        # у free_form шаблона нет в реестре, поэтому export_columns
+        # собираем на лету: union ключей trial.auxiliary (caption,
+        # follow_up_prompt и любые свои) + не-служебные ключи
+        # answer.metadata (например, justification из buttons_then_text).
+        export_columns = _free_form_export_columns(experiment, answers)
+        # multiple_choice: если есть хоть одна MC-фаза, добавляем 10
+        # пар колонок ans_K / is_correct_K (K=1..10). raw_response для
+        # MC — все выбранные через «, », общий is_correct пуст. ans_K —
+        # K-й по порядку клика выбранный вариант; is_correct_K — был
+        # ли он в наборе правильных (0/1).
+        has_mc = any(
+            ph.get("response_type") == "multiple_choice"
+            for ph in (experiment or {}).get("phases", [])
+        )
+        if has_mc:
+            for k in range(1, 11):
+                export_columns.append(f"ans_{k}")
+                export_columns.append(f"is_correct_{k}")
     header.extend(export_columns)
 
     # колонки демографии
@@ -106,8 +125,35 @@ async def export_experiment_csv(experiment_id: str) -> str:
             ans.get("timestamp", ""),
         ]
 
-        # template-specific значения
+        # template-specific значения. для MC-пар (ans_1..is_correct_10)
+        # — отдельная логика, разворачиваем metadata.mc_chosen и
+        # metadata.mc_correct. порядок — как кликал участник.
+        meta_ans = ans.get("metadata") or {}
+        mc_chosen = meta_ans.get("mc_chosen") or []
+        mc_correct = meta_ans.get("mc_correct") or []
         for col in export_columns:
+            if col.startswith("ans_") or col.startswith("is_correct_"):
+                if col.startswith("is_correct_"):
+                    key_str = col[len("is_correct_"):]
+                else:
+                    key_str = col[len("ans_"):]
+                try:
+                    k = int(key_str)
+                except ValueError:
+                    row.append("")
+                    continue
+                idx = k - 1
+                if 0 <= idx < len(mc_chosen):
+                    if col.startswith("ans_"):
+                        row.append(mc_chosen[idx])
+                    else:
+                        row.append(
+                            mc_correct[idx]
+                            if idx < len(mc_correct) else ""
+                        )
+                else:
+                    row.append("")
+                continue
             val = extract_template_value(ans, trial_index, col)
             row.append(val)
 
@@ -140,6 +186,45 @@ def _get_trial_index(
     if sess_id:
         cache[sess_id] = index
     return index
+
+
+def _free_form_export_columns(
+    experiment: Optional[dict], answers: list,
+) -> list[str]:
+    """собрать union доп-колонок для free_form: ключи из trial.auxiliary
+    (caption, follow_up_prompt и любые произвольные) + не-служебные ключи
+    из answer.metadata (например, justification для buttons_then_text).
+    порядок стабильный: сначала auxiliary, потом metadata, в порядке
+    появления."""
+    cols: list[str] = []
+    seen: set[str] = set()
+
+    def add(k: str) -> None:
+        if k and k not in seen:
+            seen.add(k)
+            cols.append(k)
+
+    if experiment:
+        for phase in experiment.get("phases", []):
+            for trial in phase.get("trials", []):
+                for k in (trial.get("auxiliary") or {}):
+                    add(str(k))
+
+    # служебные поля, которые уже отражены в базовом header или
+    # самостоятельной выгрузке (голос), в CSV дублировать не нужно.
+    # mc_chosen / mc_correct / mc_chosen_indices — multiple_choice
+    # данные; они разворачиваются в пары ans_K/correct_K при
+    # формировании строки, и как отдельные колонки не нужны.
+    skip_meta = {
+        "list_id", "option_index", "voice_blob_id", "rating_target",
+        "mc_chosen", "mc_correct", "mc_chosen_indices",
+    }
+    for ans in answers:
+        for k in (ans.get("metadata") or {}):
+            if k in skip_meta:
+                continue
+            add(str(k))
+    return cols
 
 
 def build_trial_index_from_phases(phases: list) -> dict:

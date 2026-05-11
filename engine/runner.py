@@ -167,8 +167,18 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
     # в чате, и «чистить предыдущие пробы» работает наполовину.
     extra_transient_ids: list[int] = []
 
-    # собираем клавиатуру ответов
-    keyboard = build_response_keyboard(trial, phase, session_id, phase_idx, trial_idx)
+    # multiple_choice: новая проба — обнуляем накопленный выбор
+    # на сессии. selected пробрасываем в keyboard, чтобы при первом
+    # показе все варианты были ⬜ (а при перерисовке по toggle — с
+    # актуальным состоянием).
+    if response_type == "multiple_choice":
+        await repo.update_session(session_id, {"pending_multi": []})
+        session = await repo.get_session(session_id) or session
+    keyboard = build_response_keyboard(
+        trial, phase, session_id, phase_idx, trial_idx,
+        selected=(session.get("pending_multi") or [])
+        if response_type == "multiple_choice" else None,
+    )
 
     # Text Change Detection: первая стадия — text_original с единственной
     # кнопкой «Далее». Кнопки ответа из CSV приберегаются на стадию 2,
@@ -326,11 +336,20 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
             cached_id = (
                 file_ids_by_name.get(single_name) if single_name else None
             ) or meta.get("file_id")
+            # auxiliary.caption — подпись к медиа-стимулу (free_form);
+            # при её отсутствии передаём None, Telegram нормально это
+            # съедает. в multi-image кейсе выше caption занят цифрами,
+            # туда не лезем.
+            trial_caption = (
+                (trial.get("auxiliary") or {}).get("caption") or None
+            )
             msg = None
             if cached_id:
                 try:
                     msg = await bot.send_photo(
-                        chat_id, cached_id, reply_markup=keyboard,
+                        chat_id, cached_id,
+                        caption=trial_caption,
+                        reply_markup=keyboard,
                     )
                 except Exception as e:
                     logger.warning(
@@ -356,6 +375,7 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
                         BufferedInputFile(
                             data, filename=single_name or "image",
                         ),
+                        caption=trial_caption,
                         reply_markup=keyboard,
                     )
                     pid = msg.photo[-1].file_id if msg.photo else None
@@ -365,17 +385,21 @@ async def present_trial(bot: Bot, chat_id: int, session: dict, experiment: dict)
                         )
     elif stimulus_type == "audio":
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
+        trial_caption = (trial.get("auxiliary") or {}).get("caption") or None
         # title/performer = " " — иначе Telegram выводит имя файла
         # как заголовок аудио-плеера.
         msg = await bot.send_audio(
             chat_id, file_id,
             title=" ", performer=" ",
+            caption=trial_caption,
             reply_markup=keyboard,
         )
     elif stimulus_type == "video":
         file_id = trial.get("stimulus_metadata", {}).get("file_id", "")
+        trial_caption = (trial.get("auxiliary") or {}).get("caption") or None
         msg = await bot.send_video(
             chat_id, file_id,
+            caption=trial_caption,
             reply_markup=keyboard,
         )
     else:
@@ -621,12 +645,17 @@ def _layout_buttons(options: list, callback_prefix: str) -> list:
 def build_response_keyboard(
     trial: dict, phase: dict, session_id: str,
     phase_idx: int, trial_idx: int,
+    selected: Optional[list[int]] = None,
 ) -> Optional[InlineKeyboardMarkup]:
     """собрать клавиатуру в зависимости от типа ответа.
 
     callback_data формата ans_{session_id}_{phase_idx}_{trial_idx}_{option}
     позволяет хендлеру отличить клик по актуальной пробе от клика по
     стимулу прошлой фазы или прошлой пробы (после прокрутки чата вверх).
+
+    selected — для multiple_choice: упорядоченный по клику список
+    индексов уже выбранных вариантов (нужен, чтобы при toggle нарисовать
+    обновлённое состояние ✅/⬜).
     """
     response_type = phase.get("response_type", "buttons")
 
@@ -666,7 +695,22 @@ def build_response_keyboard(
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     if response_type == "multiple_choice" and options:
-        rows = _layout_buttons(options, prefix)
+        # множественный выбор: каждый вариант — отдельная кнопка с
+        # чекбоксом (⬜ → ✅ по клику). callback_data «..._mc_{i}» —
+        # тогглит выбор, не финализирует. отдельным рядом снизу —
+        # «✅ Готово» (callback «..._mcdone»), который собирает выбор
+        # и шлёт ответ; именно момент этого клика — конец RT.
+        sel = set(selected or [])
+        rows: list[list[InlineKeyboardButton]] = []
+        for i, opt in enumerate(options):
+            mark = "✅" if i in sel else "⬜"
+            rows.append([InlineKeyboardButton(
+                text=f"{mark} {opt}",
+                callback_data=f"{prefix}_mc_{i}",
+            )])
+        rows.append([InlineKeyboardButton(
+            text="Готово", callback_data=f"{prefix}_mcdone",
+        )])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     # если ничего не подходит — кнопка «Далее»
@@ -1085,10 +1129,16 @@ async def process_answer(
                 else:
                     is_correct = normalized == str(correct_answer).strip().lower()
 
-            ask = str(
-                (trial.get("auxiliary") or {}).get("ask_justification") or ""
-            ).strip().lower()
-            wants_justification = ask in ("да", "yes", "y", "true", "1")
+            # два пути запроса второго шага:
+            #   - TVJT и шаблоны через CSV-флаг auxiliary.ask_justification;
+            #   - free_form через auxiliary.follow_up_prompt (если непуст —
+            #     второй шаг всегда нужен, и его текст берётся оттуда).
+            aux = trial.get("auxiliary") or {}
+            follow_up = str(aux.get("follow_up_prompt") or "").strip()
+            ask = str(aux.get("ask_justification") or "").strip().lower()
+            wants_justification = bool(follow_up) or ask in (
+                "да", "yes", "y", "true", "1",
+            )
 
             if not wants_justification:
                 # обоснование не нужно — пишем ответ и идём дальше.
@@ -1121,7 +1171,7 @@ async def process_answer(
             })
             prompt_msg = await bot.send_message(
                 chat_id,
-                "Опишите коротко, почему вы так решили:",
+                follow_up or "Опишите коротко, почему вы так решили:",
             )
             await repo.push_phase_message_id(session_id, prompt_msg.message_id)
             # держим приглашение в transient, чтобы оно удалилось вместе
@@ -1190,6 +1240,26 @@ async def process_answer(
         metadata["option_index"] = option_index
     if extra_metadata:
         metadata.update(extra_metadata)
+
+    # multiple_choice: к mc_chosen, который положил participant.py при
+    # submit, дополнительно прикладываем mc_correct — список 0/1 в том
+    # же порядке («был ли K-й выбор в множестве правильных»). Экспорт
+    # распакует это в пары ans_K / is_correct_K.
+    # общий is_correct для MC оставляем пустым: содержательная
+    # корректность по позициям, агрегат смысла не имеет.
+    if response_type == "multiple_choice" and "mc_chosen" in metadata:
+        ca = trial.get("correct_answer")
+        if isinstance(ca, list):
+            correct_set = {str(x).strip().lower() for x in ca}
+        elif ca is not None:
+            correct_set = {str(ca).strip().lower()}
+        else:
+            correct_set = set()
+        metadata["mc_correct"] = [
+            1 if str(c).strip().lower() in correct_set else 0
+            for c in metadata["mc_chosen"]
+        ]
+        is_correct = None
     answer_data = {
         "session_id": session_id,
         "experiment_id": session["experiment_id"],
@@ -1571,13 +1641,18 @@ def prepare_trials_for_session(
     if phase.get("randomize_order", False):
         trials = randomize_trials(trials)
 
-    # рандомизация позиций кнопок ответа внутри каждой пробы
+    # рандомизация позиций кнопок ответа внутри каждой пробы.
+    # phase-level флаг (используется free_form) приоритетнее experiment-level
+    # аргумента, чтобы можно было включить перемешивание точечно одной фазе.
     response_type = phase.get("response_type", "buttons")
     settings = phase.get("settings", {}) or {}
+    rand_btn = bool(phase.get(
+        "randomize_button_positions", randomize_button_positions,
+    ))
     # maze сам мешает target/distractor на этапе build_phase — не дублируем
     is_maze = bool(settings.get("is_maze"))
     if (
-        randomize_button_positions
+        rand_btn
         and response_type == "buttons"
         and not is_maze
     ):

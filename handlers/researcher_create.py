@@ -71,22 +71,11 @@ async def on_title_entered(message: types.Message, state: FSMContext):
 @router.message(CreateExperiment.entering_description, F.text)
 async def on_description_entered(message: types.Message, state: FSMContext):
     await state.update_data(description=message.text.strip())
-    data = await state.get_data()
-
-    # для free-form переходим в отдельный flow
-    if data.get("template_type") == "free_form":
-        from handlers.free_form import start_free_form
-
-        class FakeCallback:
-            """обертка, чтобы передать message в start_free_form"""
-            def __init__(self, msg):
-                self.message = msg
-                self.from_user = msg.from_user
-                self.data = ""
-            async def answer(self): pass
-
-        await start_free_form(FakeCallback(message), state)
-        return
-
+    # для всех шаблонов (включая free_form) — сразу в общее меню настроек.
+    # Раньше free_form вёл в конструктор фаз напрямую, но это неудобно:
+    # перед тем как грузить CSV по фазам, юзер хочет иметь возможность
+    # включить листы (lists_count) — иначе пришлось бы перезаливать каждую
+    # фазу. Конструктор фаз во free_form доступен из show_config_menu
+    # кнопкой «🧱 Редактировать фазы».
     from handlers.researcher_settings import show_config_menu
     await show_config_menu(message, state)
