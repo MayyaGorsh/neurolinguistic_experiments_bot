@@ -1644,6 +1644,13 @@ def prepare_trials_for_session(
     # рандомизация позиций кнопок ответа внутри каждой пробы.
     # phase-level флаг (используется free_form) приоритетнее experiment-level
     # аргумента, чтобы можно было включить перемешивание точечно одной фазе.
+    #
+    # применимо ко всем кнопочным типам:
+    # - buttons (lexical decision, sensicality, forced_choice и т.п.);
+    # - buttons_then_text (TVJT: «Правильно/Неправильно», порядок надо
+    #   тасовать так же — позиция кнопки иначе систематически смещает RT);
+    # - multiple_choice (порядок чекбоксов тоже стоит мешать).
+    # likert не трогаем: позиции шкалы должны быть монотонными.
     response_type = phase.get("response_type", "buttons")
     settings = phase.get("settings", {}) or {}
     rand_btn = bool(phase.get(
@@ -1653,7 +1660,7 @@ def prepare_trials_for_session(
     is_maze = bool(settings.get("is_maze"))
     if (
         rand_btn
-        and response_type == "buttons"
+        and response_type in ("buttons", "buttons_then_text", "multiple_choice")
         and not is_maze
     ):
         rebuilt = []
