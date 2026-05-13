@@ -1,7 +1,8 @@
 import logging
+from datetime import datetime
 
 from aiogram import F, Router, Bot, types
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -11,6 +12,20 @@ from utils.idle_guard import check_and_abandon_if_idle
 
 router = Router()
 logger = logging.getLogger("bot")
+
+
+CONSENT_TEXT = (
+    "Здравствуйте!\n\n"
+    "Этот бот используется для проведения научных исследований "
+    "по психо- и нейролингвистике. Ваши ответы передаются "
+    "исследователю в анонимизированном виде: в выгрузку не попадает "
+    "ни ваше имя, ни ваш телеграм-идентификатор, только содержательные "
+    "данные эксперимента.\n\n"
+    "Бот может также присылать вам приглашения участвовать в новых "
+    "исследованиях. От рассылки можно отказаться в любой момент, "
+    "введя команду /unsubscribe.\n\n"
+    "Подтверждаете согласие на участие и обработку данных в научных целях?"
+)
 
 
 @router.message(CommandStart(deep_link=True))
@@ -33,40 +48,64 @@ async def cmd_start_deep_link(
 
     deep_link_id = args  # например exp_abc123
 
-    # ищем эксперимент по deep link
-    experiment = await repo.get_experiment_by_link(deep_link_id)
-    if not experiment:
-        await message.answer("Эксперимент не найден или ссылка устарела.")
-        return
-
-    if experiment["status"] != "active":
-        await message.answer("Этот эксперимент сейчас неактивен.")
-        return
-
-    # создаем или находим пользователя как участника
+    # создаем или находим пользователя как участника. валидность ссылки
+    # и активность эксперимента проверяем уже после согласия — иначе
+    # пришлось бы дублировать проверки в двух точках входа.
     user_data = {
         "username": message.from_user.username,
         "first_name": message.from_user.first_name,
         "last_name": message.from_user.last_name,
         "role": "participant",
     }
-    await repo.get_or_create_user(message.from_user.id, user_data)
+    user = await repo.get_or_create_user(message.from_user.id, user_data)
 
-    # проверяем, не проходил ли уже
+    # экран согласия: показывается один раз, при первом переходе по
+    # любому deep-link до начала любого эксперимента. сохраняем deep_link
+    # в FSM, чтобы после «Согласен» вернуться к тому же эксперименту.
+    if not user.get("consent_given"):
+        await state.update_data(pending_deep_link=deep_link_id)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, согласен(на)", callback_data="consent_yes")],
+            [InlineKeyboardButton(text="Отказаться", callback_data="consent_no")],
+        ])
+        await message.answer(CONSENT_TEXT, reply_markup=kb)
+        return
+
+    await _enter_experiment_by_link(
+        bot, message, message.from_user.id, deep_link_id,
+    )
+
+
+async def _enter_experiment_by_link(
+    bot: Bot, reply_target: types.Message, telegram_id: int,
+    deep_link_id: str,
+):
+    """показать вход в эксперимент по deep_link_id.
+    вызывается из cmd_start_deep_link (когда согласие уже дано) и из
+    обработчика согласия (после клика «Согласен»)."""
+    experiment = await repo.get_experiment_by_link(deep_link_id)
+    if not experiment:
+        await reply_target.answer("Эксперимент не найден или ссылка устарела.")
+        return
+
+    if experiment["status"] != "active":
+        await reply_target.answer("Этот эксперимент сейчас неактивен.")
+        return
+
     exp_id = str(experiment["_id"])
-    existing = await repo.get_active_session(message.from_user.id, exp_id)
+    existing = await repo.get_active_session(telegram_id, exp_id)
     if existing:
         # idle-таймаут: если участник давно не возвращался, abandon-им
         # сессию и идём в обычный путь «начать заново».
         if await check_and_abandon_if_idle(
-            existing, experiment, bot, message.from_user.id,
+            existing, experiment, bot, telegram_id,
         ):
             existing = None
     if existing:
         # закрываем чужие in_progress сессии (от других экспериментов),
         # чтобы текст/голос не уходил «не туда» (см. find_active_session).
         await repo.abandon_other_active_sessions(
-            message.from_user.id, keep_session_id=str(existing["_id"]),
+            telegram_id, keep_session_id=str(existing["_id"]),
         )
         # резюмируем эту сессию: чистим всё, что осталось «в подвешенном
         # состоянии» от прошлого захода — иначе следующий клик/текст
@@ -84,7 +123,7 @@ async def cmd_start_deep_link(
         if clear_pending:
             await repo.update_session(str(existing["_id"]), clear_pending)
             existing = await repo.get_session(str(existing["_id"])) or existing
-        await message.answer(
+        await reply_target.answer(
             "У вас есть незавершенная сессия. "
             "Продолжаем с того места, где вы остановились."
         )
@@ -92,17 +131,17 @@ async def cmd_start_deep_link(
         prepared = existing.get("prepared_phases") or experiment["phases"]
         exp_copy = dict(experiment)
         exp_copy["phases"] = prepared
-        await runner.present_trial(bot, message.from_user.id, existing, exp_copy)
+        await runner.present_trial(bot, telegram_id, existing, exp_copy)
         return
 
     if not experiment.get("allow_repeat", False):
         # проверяем завершенные сессии
         sessions = await repo.get_sessions_by_experiment(exp_id)
         finished = [s for s in sessions
-                    if s["telegram_id"] == message.from_user.id
+                    if s["telegram_id"] == telegram_id
                     and s["status"] == "completed"]
         if finished:
-            await message.answer("Вы уже проходили этот эксперимент. Повторное прохождение не предусмотрено.")
+            await reply_target.answer("Вы уже проходили этот эксперимент. Повторное прохождение не предусмотрено.")
             return
 
     # показываем приветствие. Название эксперимента респонденту не
@@ -117,7 +156,46 @@ async def cmd_start_deep_link(
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Начать", callback_data=f"begin_{exp_id}")]
     ])
-    await message.answer(text, reply_markup=kb)
+    await reply_target.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "consent_yes")
+async def on_consent_yes(
+    callback: types.CallbackQuery, state: FSMContext, bot: Bot,
+):
+    """респондент подтвердил согласие — фиксируем и продолжаем вход
+    в эксперимент по сохранённому deep_link."""
+    await callback.answer()
+    await repo.update_user(callback.from_user.id, {
+        "consent_given": True,
+        "consent_at": datetime.utcnow(),
+    })
+    data = await state.get_data()
+    deep_link_id = data.get("pending_deep_link")
+    await state.update_data(pending_deep_link=None)
+    if not deep_link_id:
+        # экран согласия в норме показывается только в потоке deep-link,
+        # но на всякий случай страхуемся: если ссылка потерялась — даём
+        # понятную инструкцию вместо немого выхода.
+        await callback.message.answer(
+            "Спасибо! Перейдите по ссылке на исследование заново, "
+            "чтобы начать."
+        )
+        return
+    await _enter_experiment_by_link(
+        bot, callback.message, callback.from_user.id, deep_link_id,
+    )
+
+
+@router.callback_query(F.data == "consent_no")
+async def on_consent_no(callback: types.CallbackQuery, state: FSMContext):
+    """респондент отказался — без согласия пройти исследование нельзя."""
+    await callback.answer()
+    await state.update_data(pending_deep_link=None)
+    await callback.message.answer(
+        "Понятно. Без вашего согласия пройти исследование нельзя. "
+        "Если передумаете — перейдите по ссылке снова."
+    )
 
 
 @router.message(CommandStart())
@@ -213,3 +291,33 @@ async def show_researcher_menu(message: types.Message, state: FSMContext | None 
     # StaleMenuGuard блокировал клики по предыдущим меню в чате.
     if state is not None:
         await state.update_data(active_menu_msg_id=sent.message_id)
+
+
+@router.message(Command("unsubscribe"))
+async def cmd_unsubscribe(message: types.Message, state: FSMContext):
+    """отписка от рассылки. команда упомянута только в тексте согласия,
+    в меню и в подсказках не отображается. снимает consent_given —
+    после этого пользователь выпадает из выборки get_past_participants.
+    повторно подписаться можно, перейдя по любому deep-link и снова
+    подтвердив согласие."""
+    user = await repo.get_user(message.from_user.id)
+    if not user or user.get("role") != "participant":
+        # для исследователя или для незарегистрированного — молча
+        # отвечаем нейтральным текстом, чтобы не светить лишнее.
+        await message.answer("Готово.")
+        return
+    if not user.get("consent_given"):
+        await message.answer(
+            "Вы и так не получаете сообщений от бота."
+        )
+        return
+    await repo.update_user(message.from_user.id, {
+        "consent_given": False,
+        "consent_at": None,
+    })
+    logger.info("отписка участника %s", message.from_user.id)
+    await message.answer(
+        "Вы отписались от рассылки. Бот больше не будет присылать "
+        "вам приглашения. Если передумаете — перейдите по ссылке "
+        "на любое исследование и подтвердите согласие заново."
+    )

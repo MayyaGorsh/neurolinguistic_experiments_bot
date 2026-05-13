@@ -369,10 +369,19 @@ async def save_mailing(data: dict) -> str:
 
 
 async def get_past_participants() -> list:
-    """список telegram_id пользователей, которые хотя бы раз завершили эксперимент"""
+    """список telegram_id пользователей, которые хотя бы раз завершили
+    эксперимент и согласились получать сообщения от бота.
+    рассылка не идёт тем, кто не дал согласия (consent_given != True)."""
     pipeline = [
         {"$match": {"status": "completed", "is_preview": {"$ne": True}}},
         {"$group": {"_id": "$telegram_id"}},
+        {"$lookup": {
+            "from": "users",
+            "localField": "_id",
+            "foreignField": "telegram_id",
+            "as": "user",
+        }},
+        {"$match": {"user.consent_given": True}},
     ]
     result = []
     async for doc in sessions_col.aggregate(pipeline):
