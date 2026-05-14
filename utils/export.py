@@ -54,7 +54,7 @@ async def export_experiment_csv(experiment_id: str) -> str:
         "raw_response",
         "normalized_response",
         "is_correct",
-        "reaction_time_ms",
+        "response_time_ms",
         "timed_out",
         "timestamp",
     ]
