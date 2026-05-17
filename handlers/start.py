@@ -51,12 +51,9 @@ async def cmd_start_deep_link(
     # создаем или находим пользователя как участника. валидность ссылки
     # и активность эксперимента проверяем уже после согласия — иначе
     # пришлось бы дублировать проверки в двух точках входа.
-    user_data = {
-        "username": message.from_user.username,
-        "first_name": message.from_user.first_name,
-        "last_name": message.from_user.last_name,
-        "role": "participant",
-    }
+    # имя/фамилию/username не сохраняем (см. models/user.py): согласие
+    # обещает анонимизированную обработку, идентификация по telegram_id.
+    user_data = {"role": "participant"}
     user = await repo.get_or_create_user(message.from_user.id, user_data)
 
     # экран согласия: показывается один раз, при первом переходе по
@@ -246,12 +243,7 @@ async def on_welcome_researcher(
 ):
     """пользователь выбрал роль исследователя — регистрируем и показываем меню"""
     user = await repo.get_user(callback.from_user.id)
-    user_data = {
-        "username": callback.from_user.username,
-        "first_name": callback.from_user.first_name,
-        "last_name": callback.from_user.last_name,
-        "role": "researcher",
-    }
+    user_data = {"role": "researcher"}
     if not user:
         await repo.get_or_create_user(callback.from_user.id, user_data)
     elif user["role"] != "researcher":

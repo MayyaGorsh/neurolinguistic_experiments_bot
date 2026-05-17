@@ -5,11 +5,12 @@ from typing import Optional
 
 @dataclass
 class User:
-    """базовый пользователь бота"""
+    """базовый пользователь бота.
+    имя/фамилию/username из Telegram-профиля намеренно не сохраняем:
+    в боте они нигде не используются, а согласие респондента
+    обещает анонимизированную обработку - идентификация только
+    по telegram_id."""
     telegram_id: int
-    username: Optional[str] = None
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
     role: str = "participant"  # "researcher" или "participant"
     created_at: datetime = field(default_factory=datetime.utcnow)
     # согласие респондента на обработку данных и рассылку приглашений.
@@ -20,9 +21,6 @@ class User:
     def to_dict(self):
         return {
             "telegram_id": self.telegram_id,
-            "username": self.username,
-            "first_name": self.first_name,
-            "last_name": self.last_name,
             "role": self.role,
             "created_at": self.created_at,
             "consent_given": self.consent_given,
@@ -33,9 +31,6 @@ class User:
     def from_dict(cls, data: dict):
         return cls(
             telegram_id=data["telegram_id"],
-            username=data.get("username"),
-            first_name=data.get("first_name"),
-            last_name=data.get("last_name"),
             role=data.get("role", "participant"),
             created_at=data.get("created_at", datetime.utcnow()),
             consent_given=data.get("consent_given", False),
