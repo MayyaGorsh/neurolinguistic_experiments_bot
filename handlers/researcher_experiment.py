@@ -49,7 +49,7 @@ async def show_experiment_detail(
         await _render_screen(target, "Эксперимент не найден.", state=state)
         return
 
-    status_text = {"draft": "Черновик", "active": "Активен", "archived": "Архив"}
+    status_text = {"draft": "Черновик", "active": "Активен"}
     phases_count = len(exp.get("phases", []))
     trials_count = sum(len(p.get("trials", [])) for p in exp.get("phases", []))
     lists_count = max(int(exp.get("lists_count", 1) or 1), 1)
@@ -409,7 +409,7 @@ async def on_delete_ask(callback: types.CallbackQuery, state: FSMContext):
     answers = await repo.get_answers_by_experiment(exp_id)
     n_answers = len(answers)
 
-    status_text = {"draft": "Черновик", "active": "Активен", "archived": "Архив"}
+    status_text = {"draft": "Черновик", "active": "Активен"}
     info = (
         f"⚠️ <b>Удалить эксперимент?</b>\n\n"
         f"«{exp['title']}»\n"
@@ -678,7 +678,7 @@ async def on_my_experiments(callback: types.CallbackQuery, state: FSMContext):
 
     buttons = []
     for exp in experiments:
-        icon = {"draft": "📝", "active": "🟢", "archived": "📦"}.get(exp["status"], "")
+        icon = {"draft": "📝", "active": "🟢"}.get(exp["status"], "")
         buttons.append([InlineKeyboardButton(
             text=f"{icon} {exp['title']}",
             callback_data=f"exp_detail_{exp['_id']}",

@@ -70,7 +70,7 @@ class Experiment:
     title: str = ""
     description: str = ""
     template_type: str = "free_form"    # тип шаблона или free_form
-    status: str = "draft"               # draft / active / archived
+    status: str = "draft"               # draft / active
     phases: list = field(default_factory=list)  # список Phase.to_dict()
     randomize_trials: bool = False
     use_lists: bool = False
