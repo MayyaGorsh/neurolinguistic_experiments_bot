@@ -69,6 +69,13 @@ async def get_experiments_by_owner(owner_id: int) -> list:
     return await cursor.to_list(length=100)
 
 
+async def count_experiments_by_owner(owner_id: int) -> int:
+    """число всех экспериментов исследователя (черновики + активные).
+    используется для фримиум-лимита: сравниваем с FREE_EXPERIMENT_LIMIT
+    перед созданием нового эксперимента."""
+    return await experiments_col.count_documents({"owner_id": owner_id})
+
+
 async def update_experiment(experiment_id: str, update: dict):
     update["updated_at"] = datetime.utcnow()
     await experiments_col.update_one(

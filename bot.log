@@ -633,3 +633,16 @@
 2026-05-12 16:15:30 | INFO    | bot | deep link от 7828426430: exp_hZBv6zEOaZM
 2026-05-12 16:15:32 | INFO    | bot | сессия 6a0327f4b7bf7766c5bf0b23: user=7828426430, exp=6a03222421c79453c9bce777, list=2
 2026-05-12 20:10:41 | INFO    | bot | бот остановлен
+2026-05-18 13:31:49 | INFO    | bot | бот запущен
+2026-05-18 13:55:20 | INFO    | bot | сессия 6a0aefede1ec237c8adb4d35 завершена
+2026-05-18 13:59:23 | INFO    | bot | deep link от 7828426430: exp_hZBv6zEOaZM
+2026-05-18 13:59:30 | INFO    | bot | сессия 6a0af112e1ec237c8adb4d3c: user=7828426430, exp=6a03222421c79453c9bce777, list=2
+2026-05-18 14:00:29 | INFO    | bot | сессия 6a0af112e1ec237c8adb4d3c завершена
+2026-05-18 14:00:51 | DEBUG   | bot | stale callback от 540373857: msg=2618, active=2620, data=back_to_menu
+2026-05-18 20:04:04 | INFO    | bot | бот остановлен
+2026-05-18 20:04:16 | INFO    | bot | бот запущен
+2026-05-18 20:05:07 | WARNING | bot | PREMIUM REQUEST: telegram_id=540373857 photo_file_id=AgACAgIAAxkBAAIKX2oLRsObC9tux6gP8cak0AgDq8oBAALqHWsbxHNYSE48lkg4DTn1AQADAgADeAADOwQ
+2026-05-18 20:08:46 | INFO    | bot | бот остановлен
+2026-05-18 20:08:54 | INFO    | bot | бот запущен
+2026-05-18 20:09:01 | INFO    | bot | бот остановлен
+2026-05-18 20:09:08 | INFO    | bot | бот запущен

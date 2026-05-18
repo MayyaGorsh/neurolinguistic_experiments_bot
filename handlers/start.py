@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
 from engine import runner
+from models.user import is_premium_active
 from utils.idle_guard import check_and_abandon_if_idle
 
 router = Router()
@@ -190,8 +191,8 @@ async def on_consent_no(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.update_data(pending_deep_link=None)
     await callback.message.answer(
-        "Понятно. Без вашего согласия пройти исследование нельзя. "
-        "Если передумаете — перейдите по ссылке снова."
+        "Без вашего согласия пройти исследование невозможно. "
+        "Если измените решение, перейдите по ссылке заново."
     )
 
 
@@ -270,14 +271,30 @@ async def on_welcome_participant(
     )
 
 
-async def show_researcher_menu(message: types.Message, state: FSMContext | None = None):
-    """главное меню исследователя"""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+def build_researcher_menu_kb(is_premium: bool) -> InlineKeyboardMarkup:
+    """клавиатура главного меню исследователя.
+
+    кнопка премиума есть всегда: для не-премиум - «Перейти на премиум» с
+    переходом на экран оплаты; для премиума - «Премиум» с переходом на тот
+    же экран, где показывается дата окончания подписки и кнопка продления.
+    """
+    premium_label = (
+        "⭐ Премиум" if is_premium else "⭐ Перейти на премиум"
+    )
+    buttons = [
         [InlineKeyboardButton(text="Создать эксперимент", callback_data="create_experiment")],
         [InlineKeyboardButton(text="Мои эксперименты", callback_data="my_experiments")],
         [InlineKeyboardButton(text="Результаты", callback_data="results_menu")],
         [InlineKeyboardButton(text="Рассылка участникам", callback_data="promo_menu")],
-    ])
+        [InlineKeyboardButton(text=premium_label, callback_data="premium_info")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def show_researcher_menu(message: types.Message, state: FSMContext | None = None):
+    """главное меню исследователя"""
+    user = await repo.get_user(message.from_user.id)
+    kb = build_researcher_menu_kb(is_premium_active(user))
     sent = await message.answer("Главное меню:", reply_markup=kb)
     # фиксируем id главного меню как «текущий активный экран», чтобы
     # StaleMenuGuard блокировал клики по предыдущим меню в чате.

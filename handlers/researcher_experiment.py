@@ -719,10 +719,11 @@ async def on_results_menu(callback: types.CallbackQuery, state: FSMContext):
 async def on_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Создать эксперимент", callback_data="create_experiment")],
-        [InlineKeyboardButton(text="Мои эксперименты", callback_data="my_experiments")],
-        [InlineKeyboardButton(text="Результаты", callback_data="results_menu")],
-        [InlineKeyboardButton(text="Рассылка участникам", callback_data="promo_menu")],
-    ])
+    # клавиатуру главного меню собираем единым помощником из handlers.start —
+    # чтобы кнопка «Перейти на премиум» появлялась/исчезала тут так же, как
+    # после /start.
+    from handlers.start import build_researcher_menu_kb
+    from models.user import is_premium_active
+    user = await repo.get_user(callback.from_user.id)
+    kb = build_researcher_menu_kb(is_premium_active(user))
     await _render_screen(callback, "Главное меню:", kb, state=state)

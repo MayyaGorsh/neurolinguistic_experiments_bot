@@ -9,6 +9,9 @@ from aiogram import types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from config import FREE_EXPERIMENT_LIMIT
+from db import repositories as repo
+from models.user import is_premium_active
 from handlers.researcher_common import (
     router,
     CreateExperiment,
@@ -22,6 +25,33 @@ from handlers.researcher_common import (
 @router.callback_query(F.data == "create_experiment")
 async def on_create_experiment(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    # фримиум-лимит: считаем все эксперименты пользователя (черновики +
+    # активные). у премиум-пользователей лимита нет.
+    user = await repo.get_user(callback.from_user.id)
+    if not is_premium_active(user):
+        existing = await repo.count_experiments_by_owner(callback.from_user.id)
+        if existing >= FREE_EXPERIMENT_LIMIT:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="⭐ Перейти на премиум", callback_data="premium_info",
+                )],
+                [InlineKeyboardButton(
+                    text="Мои эксперименты", callback_data="my_experiments",
+                )],
+                [InlineKeyboardButton(
+                    text="← В главное меню", callback_data="back_to_menu",
+                )],
+            ])
+            await _render_screen(
+                callback,
+                f"В бесплатном тарифе доступно до {FREE_EXPERIMENT_LIMIT} экспериментов. "
+                f"Сейчас у вас {existing}.\n\n"
+                "Удалите ненужные эксперименты или перейдите на премиум, "
+                "чтобы снять лимит.",
+                kb,
+                state=state,
+            )
+            return
     # показываем список шаблонов
     buttons = []
     for code, label in TEMPLATE_LIST:

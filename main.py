@@ -7,7 +7,7 @@ from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN
 from logger import setup_logger
-from handlers import start, researcher, participant, free_form, media_upload, promo, common
+from handlers import start, researcher, participant, free_form, media_upload, promo, premium, common
 from utils.stale_guard import StaleMenuGuard
 from utils.idle_middleware import ParticipantIdleGuard
 from utils.fsm_bridge import register_storage
@@ -36,6 +36,7 @@ async def main():
     # сообщения другая — не по message_id, а по полям сессии.
     researcher.router.callback_query.outer_middleware(StaleMenuGuard())
     promo.router.callback_query.outer_middleware(StaleMenuGuard())
+    premium.router.callback_query.outer_middleware(StaleMenuGuard())
 
     # idle-таймаут участника: если давно ничего не отвечал, abandon-им
     # сессию на любом следующем действии (см. utils/idle_middleware.py).
@@ -49,6 +50,7 @@ async def main():
     dp.include_router(free_form.router)
     dp.include_router(media_upload.router)
     dp.include_router(promo.router)
+    dp.include_router(premium.router)
     dp.include_router(participant.router)
     dp.include_router(common.router)  # fallback — последним
 

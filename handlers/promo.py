@@ -11,6 +11,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import repositories as repo
+from models.user import is_premium_active
 from utils.ui import render_screen
 
 router = Router()
@@ -25,6 +26,27 @@ class PromoStates(StatesGroup):
 @router.callback_query(F.data == "promo_menu")
 async def on_promo_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    # фримиум-гейт: рассылка использует общую базу участников всего бота,
+    # это премиум-фича. для не-премиум показываем шторку с кнопкой апгрейда.
+    user = await repo.get_user(callback.from_user.id)
+    if not is_premium_active(user):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⭐ Перейти на премиум", callback_data="premium_info",
+            )],
+            [InlineKeyboardButton(
+                text="← В главное меню", callback_data="back_to_menu",
+            )],
+        ])
+        await render_screen(
+            callback,
+            "Рассылка участникам доступна только в премиум-статусе.\n\n"
+            "Премиум открывает доступ к базе прошлых участников бота и "
+            "снимает лимит на число экспериментов.",
+            kb,
+            state=state,
+        )
+        return
     participants = await repo.get_past_participants()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="← В главное меню", callback_data="back_to_menu")],
