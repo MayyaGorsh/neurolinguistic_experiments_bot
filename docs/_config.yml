@@ -1,0 +1,20 @@
+title: Документация бота для лингвистических экспериментов
+description: >-
+  Telegram-бот для проведения психо- и нейролингвистических экспериментов
+  и сбора данных от информантов. ВКР, НИУ ВШЭ, ОП «Фундаментальная и
+  компьютерная лингвистика», 2026.
+
+theme: jekyll-theme-cayman
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  toc_levels: 2..3
+  syntax_highlighter: rouge
+
+permalink: pretty
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
